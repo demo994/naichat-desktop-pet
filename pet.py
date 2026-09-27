@@ -85,6 +85,16 @@ class Pet:
         self.drag_to = (0, 0)
         self.slip = 0
         self.grab_pt = None
+        self.happy = 60.0
+        self.pet_count = 0
+        self.pet_last = 0
+        self.expr = "normal"
+        self.expr_until = 0
+        self._expr = "normal"
+        self.shake = 0
+        self.dizzy_pending = False
+        self.remind_on = True
+        self.remind_next = time.time() + 3600
         self.drag_dx = 0
         self.drag_dy = 0
         self.save_next = time.time() + 20
@@ -133,6 +143,7 @@ class Pet:
             self.progress = d.get("progress", 0.0)
             self.total_secs = d.get("total_secs", 0.0)
             self.hunger = d.get("hunger", 0.0)
+            self.happy = d.get("happy", 60.0)
         except Exception:
             pass
 
@@ -141,7 +152,8 @@ class Pet:
             with open(self.path(), "w", encoding="utf-8") as f:
                 json.dump({"stage": self.stage, "progress": self.progress,
                            "total_secs": self.total_secs,
-                           "hunger": self.hunger}, f, ensure_ascii=False)
+                           "hunger": self.hunger, "happy": self.happy},
+                          f, ensure_ascii=False)
         except Exception:
             pass
 
@@ -150,6 +162,17 @@ class Pet:
         self.mood = text
         self.say_text = text
         self.say_until = self.t + dur
+
+    def set_expr(self, e, dur=150):
+        self.expr = e
+        self.expr_until = self.t + dur
+
+    def pat(self):
+        self.happy = min(100.0, self.happy + 3)
+        self.set_expr("happy")
+        self.fx.append({"type": "love", "x": random.randint(-16, 16),
+                        "y": -50, "life": 30})
+        self.say("喵～好舒服" if self.stage == 2 else "嗷呜～")
 
     def on_press(self, e):
         if self.state == "sleep":
@@ -160,11 +183,22 @@ class Pet:
         self.state = "drag"
 
     def on_drag(self, e):
-        self.x = self.root.winfo_x() + e.x - W // 2
-        self.y = self.root.winfo_y() + e.y - H + 80
+        nx = self.root.winfo_x() + e.x - W // 2
+        ny = self.root.winfo_y() + e.y - H + 80
+        if abs(nx - self.x) + abs(ny - self.y) > 45:
+            self.shake += 1
+            if self.shake > 4:
+                self.shake = 0
+                self.dizzy_pending = True
+                self.happy = max(0.0, self.happy - 4)
+                self.set_expr("angry", 120)
+                self.say("别晃我！要吐了！")
+        self.x, self.y = nx, ny
         self.place_window()
 
     def on_release(self, e):
+        if self.home_y - self.y > 150:
+            self.dizzy_pending = True
         self.state = "fall"
 
     def on_double(self, e):
@@ -176,12 +210,52 @@ class Pet:
             self.thinking = True
             self.think_until = self.t + 90
         self.progress += 0.1
-        self.say("被撸得好开心")
+        self.pet_count = self.pet_count + 1 \
+            if self.t - self.pet_last < 90 else 1
+        self.pet_last = self.t
+        self.happy = min(100.0, self.happy + 3)
+        if self.pet_count >= 3:
+            self.set_expr("love", 240)
+            self.say("最喜欢你啦！")
+        else:
+            self.set_expr("happy")
+            self.say("被撸得好开心")
+
+    def toggle_remind(self):
+        self.remind_on = not self.remind_on
+        self.remind_next = time.time() + 3600
+        self.say("会提醒你喝水" if self.remind_on else "好吧不提醒了")
+
+    def show_status(self):
+        names = {0: "奶龙宝宝", 1: "少年奶龙", 2: "奶猫"}
+        def bar(v):
+            n = max(0, min(10, int(round(v / 10))))
+            return "▓" * n + "░" * (10 - n)
+        secs = int(self.total_secs)
+        need = "MAX" if self.stage >= 2 else \
+            f"{self.progress:.1f}/{self.evo_needs[self.stage]}"
+        lines = [f"形态：{names[self.stage]}",
+                 f"饥饿：{bar(self.hunger)}",
+                 f"心情：{bar(self.happy)}",
+                 f"进化进度：{need}",
+                 f"累计在线：{secs // 3600}小时{secs % 3600 // 60}分"]
+        w = tk.Toplevel(self.root)
+        w.title("奶猫状态面板")
+        w.attributes("-topmost", True)
+        for s in lines:
+            tk.Label(w, text=s, font=("Microsoft YaHei", 10),
+                     padx=16, pady=4, anchor="w").pack(fill="x")
+        w.resizable(False, False)
 
     def on_menu(self, e):
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="喂清江鱼", command=self.feed)
+        m.add_command(label="摸摸头", command=self.pat)
         m.add_command(label="玩毛线球", command=self.start_play)
+        m.add_command(label=("喝水提醒：开" if self.remind_on
+                             else "喝水提醒：关"),
+                      command=self.toggle_remind)
+        m.add_command(label="查看状态", command=self.show_status)
         m.add_command(label=("跟随模式：开" if self.follow_on else "跟随模式：关"),
                       command=self.toggle_follow)
         m.add_command(label=("干扰拉扯：开" if self.pull_on else "干扰拉扯：关"),
@@ -212,7 +286,9 @@ class Pet:
     def feed(self):
         self.hunger = max(0.0, self.hunger - 40)
         self.progress += 1.0
+        self.happy = min(100.0, self.happy + 6)
         self.fx.append({"type": "food", "x": 0, "y": -50, "life": 40})
+        self.set_expr("love" if self.happy > 90 else "happy", 200)
         self.say("清江鱼！最爱了！")
         if self.state in ("idle", "rest", "wander"):
             self.state = "rest"
@@ -263,6 +339,11 @@ class Pet:
         if self.t % 30 == 0:
             self.total_secs += 1
             self.hunger = min(100, self.hunger + 0.15)
+            self.happy = max(0.0, self.happy - 0.04)
+        if self.remind_on and time.time() > self.remind_next:
+            self.remind_next += 3600
+            self.say("主人，喝口水休息一下吧！", 260)
+            self.set_expr("surprised", 160)
         if self.thinking and self.t > self.think_until:
             self.thinking = False
         if self.t % 90 == 0:
@@ -290,24 +371,37 @@ class Pet:
                 self.state = "rest"
                 self.timer = 30
                 self.squash = 8
+                if self.dizzy_pending:
+                    self.dizzy_pending = False
+                    self.set_expr("dizzy", 220)
+                    self.say("头好晕…转圈圈", 220)
+                    self.fx.append({"type": "star", "x": 0, "y": -90,
+                                    "life": 60})
+                else:
+                    self.shake = 0
         elif self.state == "rest":
             self.timer -= 1
             if self.timer <= 0:
                 self.state = "pick"
                 self.timer = 1
         elif self.state == "pick":
-            roll = random.random()
-            if self.follow_on and roll < 0.55:
-                self.state = "wiggle"
-                self.timer = 22
-                self.say("锁定目标！", 90)
-            elif roll < 0.75:
-                self.target = (random.randint(self.L + 60, self.R - 60),
-                               self.home_y)
-                self.state = "wander"
+            if time.localtime().tm_hour < 7 and random.random() < 0.6:
+                self.set_expr("sleepy", 600)
+                self.say("好困…先睡了", 240)
+                self.state = "sleep"
             else:
-                self.state = random.choice(("groom", "stretch", "look"))
-                self.timer = random.randint(90, 170)
+                roll = random.random()
+                if self.follow_on and roll < 0.55:
+                    self.state = "wiggle"
+                    self.timer = 22
+                    self.say("锁定目标！", 90)
+                elif roll < 0.75:
+                    self.target = (random.randint(self.L + 60, self.R - 60),
+                                   self.home_y)
+                    self.state = "wander"
+                else:
+                    self.state = random.choice(("groom", "stretch", "look"))
+                    self.timer = random.randint(90, 170)
         elif self.state in ("groom", "stretch", "look"):
             self.timer -= 1
             if self.timer <= 0:
@@ -387,7 +481,8 @@ class Pet:
         if abs(dx) < 12 or self.timer <= 0:
             self.state = "rest"
             self.timer = random.randint(60, 140)
-            self.say("拖好啦，歇一会")
+            self.set_expr("smug", 220)
+            self.say("拖好啦，下次别乱动鼠标～")
             self.evo_check()
             return
         self.facing = 1 if dx > 0 else -1
@@ -404,6 +499,7 @@ class Pet:
             if self.slip > 30:
                 self.state = "rest"
                 self.timer = 60
+                self.set_expr("angry", 200)
                 self.say("拖不动…你力气太大")
                 return
         else:
@@ -501,6 +597,14 @@ class Pet:
             bob = math.sin(self.t * 0.11) * 1.3 * s
         y = cy + bob
         f = self.facing
+        if self.t < self.expr_until:
+            self._expr = self.expr
+        elif self.state == "sleep":
+            self._expr = "sleepy"
+        elif self.hunger > 75 or self.happy < 25:
+            self._expr = "sad"
+        else:
+            self._expr = "normal"
         self.sqx = 1 + self.squash * 0.014
         self.sqy = 1 - self.squash * 0.02
         self.wig = math.sin(self.t * 1.3) * 5 * s \
@@ -564,6 +668,48 @@ class Pet:
         dy = max(-1.5, min(2, (my - self.y) / 90))
         return dx, dy
 
+    def expr_eyes(self, c, px, ey, s, line_c, k=0):
+        e = self._expr
+        if e == "love":
+            c.create_text(px, ey, text="❤", fill="#FF6B81",
+                          font=("Arial", int(10 * s)))
+            return True
+        if e == "happy":
+            c.create_arc(px - 6 * s, ey - 7 * s, px + 6 * s, ey + 5 * s,
+                         start=20, extent=140, style="arc",
+                         outline=line_c, width=2)
+            return True
+        if e in ("angry", "dizzy"):
+            r = 5.5 * s if e == "angry" else 4 * s
+            c.create_line(px - r, ey - r * 0.8, px + r, ey + r * 0.8,
+                          width=2, fill=line_c)
+            c.create_line(px - r, ey + r * 0.8, px + r, ey - r * 0.8,
+                          width=2, fill=line_c)
+            return True
+        if e == "smug" and k < 0:
+            c.create_line(px - 5.5 * s, ey + 1 * s, px + 5.5 * s, ey + 1 * s,
+                          width=2, fill=line_c)
+            return True
+        return False
+
+    def expr_mouth(self, c, cx, my, s, line_c):
+        e = self._expr
+        if e == "sad":
+            c.create_arc(cx - 7 * s, my, cx + 7 * s, my + 10 * s,
+                         start=20, extent=140, style="arc", outline=line_c)
+            return True
+        if e == "smug":
+            c.create_arc(cx - 1 * s, my - 4 * s, cx + 9 * s, my + 4 * s,
+                         start=180, extent=110, style="arc", outline=line_c)
+            return True
+        if e == "happy":
+            c.create_oval(cx - 6 * s, my - 2 * s, cx + 6 * s, my + 8 * s,
+                          fill="#E8747C", outline="")
+            c.create_oval(cx - 3 * s, my + 2 * s, cx + 3 * s, my + 8 * s,
+                          fill="#FF9EB5", outline="")
+            return True
+        return False
+
     def draw_dragon(self, c, cx, y, s, f, baby):
         head_r = (34 if baby else 38) * s
         body_r = (26 if baby else 32) * s
@@ -606,24 +752,34 @@ class Pet:
         for k in (-1, 1):
             ey = hy - 8 * s
             px = cx + k * 16 * s
-            if self.state == "dragmouse":
+            if self.state == "dragmouse" or self._expr == "angry":
                 c.create_line(px - 5 * s, ey - 4 * s, px + 5 * s, ey + 4 * s,
                               width=2, fill="#5B4A12")
                 c.create_line(px - 5 * s, ey + 4 * s, px + 5 * s, ey - 4 * s,
                               width=2, fill="#5B4A12")
-            elif eyes_closed:
+                bx = 7 * s
+                c.create_line(px - bx, ey - 12 * s + (k * 2 * s * -f),
+                              px + bx, ey - 9 * s + (k * 2 * s * f),
+                              width=2, fill="#5B4A12")
+            elif self.expr_eyes(c, px, ey, s, "#5B4A12", k):
+                pass
+            elif eyes_closed or self._expr == "sleepy":
                 c.create_line(px - 5 * s, ey, px + 5 * s, ey, width=2,
                               fill="#5B4A12")
             else:
-                c.create_oval(px - 5 * s, ey - 6 * s, px + 5 * s, ey + 6 * s,
+                big = 1.35 if self._expr == "surprised" else 1.0
+                pr = 2.4 * s * (0.7 if self._expr == "surprised" else 1.0)
+                dy = 2 * s if self._expr == "sad" else 0
+                c.create_oval(px - 5 * s * big, ey - 6 * s * big,
+                              px + 5 * s * big, ey + 6 * s * big,
                               fill="white", outline="")
-                c.create_oval(px - 2.4 * s + lx * 2, ey - 2.4 * s + ly * 2,
-                              px + 2.4 * s + lx * 2, ey + 2.4 * s + ly * 2,
+                c.create_oval(px - pr + lx * 2, ey - pr + ly * 2 + dy,
+                              px + pr + lx * 2, ey + pr + ly * 2 + dy,
                               fill="#3A2E0A", outline="")
         if self.mouth_open:
             c.create_oval(cx - 9 * s, hy + 8 * s, cx + 9 * s, hy + 22 * s,
                           fill="#D9534F", outline="")
-        else:
+        elif not self.expr_mouth(c, cx, hy + 10 * s, s, "#5B4A12"):
             c.create_line(cx - 7 * s, hy + 13 * s, cx + 7 * s, hy + 13 * s,
                           width=2, fill="#5B4A12")
         c.create_oval(cx + 22 * s - 4, hy + 4 * s, cx + 26 * s, hy + 10 * s,
@@ -704,30 +860,39 @@ class Pet:
         eyes_closed = self.state in ("sleep", "groom") or self.blink
         for k in (-1, 1):
             px, ey = cx + k * 14 * s, hy - 2 * s
-            if self.state == "dragmouse":
+            if self.state == "dragmouse" or self._expr == "angry":
                 c.create_line(px - 5.5 * s, ey - 4.5 * s,
                               px + 5.5 * s, ey + 4.5 * s,
                               width=2, fill="#6B5B4A")
                 c.create_line(px - 5.5 * s, ey + 4.5 * s,
                               px + 5.5 * s, ey - 4.5 * s,
                               width=2, fill="#6B5B4A")
-            elif eyes_closed:
+                c.create_line(px - 7 * s, ey - 12 * s - k * 2 * s,
+                              px + 7 * s, ey - 9 * s + k * 2 * s,
+                              width=2, fill="#6B5B4A")
+            elif self.expr_eyes(c, px, ey, s, "#6B5B4A", k):
+                pass
+            elif eyes_closed or self._expr == "sleepy":
                 c.create_arc(px - 6 * s, ey - 4 * s, px + 6 * s, ey + 6 * s,
                              start=200, extent=140, style="arc",
                              outline="#6B5B4A", width=2)
             else:
-                c.create_oval(px - 6.5 * s, ey - 7.5 * s,
-                              px + 6.5 * s, ey + 7.5 * s,
+                big = 1.25 if self._expr == "surprised" else 1.0
+                dy = 2 * s if self._expr == "sad" else 0
+                c.create_oval(px - 6.5 * s * big, ey - 7.5 * s * big,
+                              px + 6.5 * s * big, ey + 7.5 * s * big,
                               fill="#4A3B5C", outline="")
-                c.create_oval(px - 3 * s + lx * 1.5, ey - 4 * s + ly * 1.5,
-                              px + 0.5 * s + lx * 1.5, ey - 0.5 * s + ly * 1.5,
+                c.create_oval(px - 3 * s + lx * 1.5,
+                              ey - 4 * s + ly * 1.5 + dy,
+                              px + 0.5 * s + lx * 1.5,
+                              ey - 0.5 * s + ly * 1.5 + dy,
                               fill="white", outline="")
         c.create_polygon(cx - 3 * s, hy + 8 * s, cx + 3 * s, hy + 8 * s,
                          cx, hy + 12 * s, fill="#FF9EB5", outline="")
         if self.mouth_open:
             c.create_oval(cx - 7 * s, hy + 12 * s, cx + 7 * s, hy + 23 * s,
                           fill="#E8747C", outline="")
-        else:
+        elif not self.expr_mouth(c, cx, hy + 14 * s, s, "#6B5B4A"):
             c.create_arc(cx - 9 * s, hy + 9 * s, cx - 1 * s, hy + 16 * s,
                          start=200, extent=140, style="arc",
                          outline="#6B5B4A")
@@ -791,6 +956,16 @@ class Pet:
                 r = (45 - a) * 6
                 c.create_oval(cx - r, cy - r - 30, cx + r, cy + r - 30,
                               outline="#FFE066", width=3)
+            elif life["type"] == "star":
+                ang = a * 0.25
+                c.create_text(cx + math.cos(ang) * 34,
+                              cy + e["y"] + math.sin(ang) * 8,
+                              text="✦", fill="#FFD94A",
+                              font=("Arial", 12))
+                c.create_text(cx - math.cos(ang) * 34,
+                              cy + e["y"] - math.sin(ang) * 8,
+                              text="✦", fill="#FFD94A",
+                              font=("Arial", 10))
         self.fx = keep
         if self.thinking:
             dots = "・" * (1 + (self.t // 20) % 3)
