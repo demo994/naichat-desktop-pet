@@ -147,6 +147,12 @@ class Pet:
         self.win_last = -999
         self.lbtn = False
         self.lbtn_last = -999
+        self.click_job = None
+        self.press_x = 0
+        self.press_y = 0
+        self.press_t = 0.0
+        self._status_w = None
+        self._status_vars = []
         self.evo_times = [600, 1800]
         self.evo_needs = [5, 12]
 
@@ -247,6 +253,8 @@ class Pet:
                 self.timer = 200
                 return
         self.drag_dx, self.drag_dy = e.x, e.y
+        self.press_x, self.press_y = e.x_root, e.y_root
+        self.press_t = time.time()
         self.state = "drag"
 
     def on_drag(self, e):
@@ -266,11 +274,25 @@ class Pet:
     def on_release(self, e):
         if self.state == "chase":
             return
+        if self.state == "drag" and \
+                math.hypot(e.x_root - self.press_x,
+                           e.y_root - self.press_y) < 10 and \
+                time.time() - self.press_t < 0.6:
+            if self.click_job is not None:
+                self.root.after_cancel(self.click_job)
+            self.click_job = self.root.after(400, self._click_status)
         if self.home_y - self.y > 150:
             self.dizzy_pending = True
         self.state = "fall"
 
+    def _click_status(self):
+        self.click_job = None
+        self.show_status()
+
     def on_double(self, e):
+        if self.click_job is not None:
+            self.root.after_cancel(self.click_job)
+            self.click_job = None
         if self.state == "sleep":
             self.state = "rest"
             return
@@ -295,7 +317,7 @@ class Pet:
         self.remind_next = time.time() + 3600
         self.say("会提醒你喝水" if self.remind_on else "好吧不提醒了")
 
-    def show_status(self):
+    def status_lines(self):
         names = {0: "奶龙宝宝", 1: "少年奶龙", 2: "奶猫"}
         def bar(v):
             n = max(0, min(10, int(round(v / 10))))
@@ -303,23 +325,50 @@ class Pet:
         secs = int(self.total_secs)
         need = "MAX" if self.stage >= 2 else \
             f"{self.progress:.1f}/{self.evo_needs[self.stage]}"
-        lines = [f"形态：{names[self.stage]}",
-                 f"金币：{self.money} 🪙",
-                 f"饱腹：{bar(100 - self.hunger)}",
-                 f"水分：{bar(100 - self.thirst)}",
-                 f"心情：{bar(self.happy)}",
-                 f"智力 Lv.{int(self.stats['智力'])}"
-                 f"　魅力 Lv.{int(self.stats['魅力'])}"
-                 f"　力量 Lv.{int(self.stats['力量'])}",
-                 f"进化进度：{need}",
-                 f"累计在线：{secs // 3600}小时{secs % 3600 // 60}分"]
+        return [f"形态：{names[self.stage]}",
+                f"金币：{self.money} 🪙",
+                f"饱腹：{bar(100 - self.hunger)}",
+                f"水分：{bar(100 - self.thirst)}",
+                f"心情：{bar(self.happy)}",
+                f"智力 Lv.{int(self.stats['智力'])}"
+                f"　魅力 Lv.{int(self.stats['魅力'])}"
+                f"　力量 Lv.{int(self.stats['力量'])}",
+                f"进化进度：{need}",
+                f"累计在线：{secs // 3600}小时{secs % 3600 // 60}分"]
+
+    def refresh_status(self):
+        if self._status_w is None:
+            return
+        try:
+            if not self._status_w.winfo_exists():
+                self._status_w = None
+                return
+            for var, s in zip(self._status_vars, self.status_lines()):
+                var.set(s)
+        except tk.TclError:
+            self._status_w = None
+
+    def show_status(self):
+        if self._status_w is not None:
+            try:
+                if self._status_w.winfo_exists():
+                    self._status_w.destroy()
+                    self._status_w = None
+                    return
+            except tk.TclError:
+                pass
         w = tk.Toplevel(self.root)
+        self._status_w = w
         w.title("奶猫状态面板")
         w.attributes("-topmost", True)
-        for s in lines:
-            tk.Label(w, text=s, font=("Microsoft YaHei", 10),
+        self._status_vars = []
+        for s in self.status_lines():
+            var = tk.StringVar(value=s)
+            tk.Label(w, textvariable=var, font=("Microsoft YaHei", 10),
                      padx=16, pady=4, anchor="w").pack(fill="x")
+            self._status_vars.append(var)
         w.resizable(False, False)
+        w.bind("<Button-1>", lambda e: w.iconify())
 
     def on_menu(self, e):
         m = tk.Menu(self.root, tearoff=0)
@@ -751,6 +800,8 @@ class Pet:
         if time.time() > self.save_next:
             self.save()
             self.save_next = time.time() + 20
+        if self.t % 15 == 0 and self._status_w is not None:
+            self.refresh_status()
         if self.squash:
             self.squash *= 0.86
             if self.squash < 0.3:
