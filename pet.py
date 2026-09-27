@@ -151,6 +151,7 @@ class Pet:
         self.last_act = 0
         self.but = None
         self._last_line = {}
+        self.jump_t = 0
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -312,6 +313,12 @@ class Pet:
         "mirror_end": ("镜子里的我最可爱", "他怎么跟我长得一模一样", "和镜子里的自己握手言和"),
         "solo_pounce": ("扑！", "差一点…没扑着", "你别跑呀"),
         "solo_dizzy": ("转得好晕…", "有点晕，扶我一下", "世界在转圈圈…"),
+        # 打哈欠 / 躲猫猫 / 打喷嚏
+        "yawn": ("哈～呜呜呜～", "睡不醒…根本睡不醒", "这空气太舒服了，忍不住打哈欠"),
+        "peek": ("猜猜我在不在", "看不到我～看不到我～", "我是一只隐身猫"),
+        "peek_end": ("Surprise！吓到没", "咦，我在这儿呢～", "被发现了，嘿嘿"),
+        "sneez_pre": ("阿…阿…", "鼻子有点痒…", "感觉要有大事发生…"),
+        "sneeze": ("哈啾！！", "哈——啾！！", "阿嚏！！把自己吓了一跳"),
     }
 
     def say_line(self, key, wait=180, **fmt):
@@ -412,6 +419,7 @@ class Pet:
         if self.pet_count >= 3:
             self.set_expr("love", 240)
             self.say_line("pat_love")
+            self.jump_t = 16
         else:
             self.set_expr("happy")
             self.say_line("pat_happy")
@@ -639,9 +647,11 @@ class Pet:
         if kind == "full":
             self.hunger = max(0.0, self.hunger - val)
             self.say_line("eat", name=name)
+            self.set_expr("yum", 150)
         elif kind == "water":
             self.thirst = max(0.0, self.thirst - val)
             self.say_line("drink", name=name)
+            self.set_expr("yum", 150)
         else:
             old = int(self.stats[stat])
             self.stats[stat] += val
@@ -655,7 +665,8 @@ class Pet:
         self.happy = min(100.0, self.happy + hp)
         self.progress += 0.1
         self.fx.append({"type": "food", "x": 0, "y": -50, "life": 40})
-        self.set_expr("love" if self.happy > 90 else "happy", 200)
+        if kind not in ("full", "water"):
+            self.set_expr("love" if self.happy > 90 else "happy", 200)
         if self.state in ("idle", "rest", "wander"):
             self.state = "rest"
             self.timer = 40
@@ -929,6 +940,22 @@ class Pet:
                 self.but = None
                 self._solo_end("butterfly", 2.0)
 
+    def idle_act_start(self):
+        self.state = random.choice(("groom", "stretch", "look",
+                                    "yawn", "peek", "sneez"))
+        if self.state == "yawn":
+            self.timer = 90
+            self.set_expr("sleepy", 90)
+            self.say_line("yawn", 200)
+        elif self.state == "peek":
+            self.timer = 150
+            self.say_line("peek", 220)
+        elif self.state == "sneez":
+            self.timer = 55
+            self.say_line("sneez_pre", 60)
+        else:
+            self.timer = random.randint(90, 170)
+
     # ---------- movement ----------
     def place_window(self):
         cx = self.x + W / 2 - (W / 2)
@@ -1009,6 +1036,8 @@ class Pet:
             self.squash *= 0.86
             if self.squash < 0.3:
                 self.squash = 0
+        if self.jump_t:
+            self.jump_t -= 1
 
         self.moving = False
         if self.state == "sleep":
@@ -1056,13 +1085,33 @@ class Pet:
                                    self.home_y)
                     self.state = "wander"
                 else:
-                    self.state = random.choice(("groom", "stretch", "look"))
-                    self.timer = random.randint(90, 170)
-        elif self.state in ("groom", "stretch", "look"):
+                    self.idle_act_start()
+        elif self.state in ("groom", "stretch", "look", "yawn"):
             self.timer -= 1
             if self.timer <= 0:
                 self.state = "rest"
                 self.timer = random.randint(40, 120)
+        elif self.state == "peek":
+            self.timer -= 1
+            if self.timer == 80:
+                self.state = "rest"
+                self.timer = 40
+                self.say_line("peek_end", 160)
+                self.set_expr("happy", 180)
+                self.jump_t = 16
+                self.happy = min(100.0, self.happy + 1)
+                self.progress += 0.05
+        elif self.state == "sneez":
+            self.timer -= 1
+            if self.timer == 15:
+                self.say_line("sneeze", 120)
+                self.set_expr("surprised", 60)
+                self.jump_t = 10
+                self.fx.append({"type": "dust", "x": -22, "y": -30,
+                                "life": 12})
+            if self.timer <= 0:
+                self.state = "rest"
+                self.timer = random.randint(40, 100)
         elif self.state == "wiggle":
             self.timer -= 1
             if self.timer <= 0:
@@ -1095,6 +1144,7 @@ class Pet:
                 self.state = "rest"
                 self.timer = random.randint(30, 90)
                 self.say_line("chase_fail")
+                self.set_expr(random.choice(("sad", "sweat")), 160)
         elif self.state == "pounce":
             self.timer -= 1
             if self.timer <= 0:
@@ -1184,7 +1234,8 @@ class Pet:
             if self.slip > 30:
                 self.state = "rest"
                 self.timer = 60
-                self.set_expr("angry", 200)
+                self.set_expr(random.choice(("angry", "sweat", "sweat")),
+                              200)
                 self.say_line("drag_fail")
                 return
         else:
@@ -1347,6 +1398,9 @@ class Pet:
             self.hop = (9 - self.timer) * 3
         elif self.state == "bite":
             self.hop = 2 if self.timer % 12 < 6 else 0
+        if self.jump_t:
+            self.hop = max(self.hop, int(math.sin(
+                self.jump_t / 16.0 * math.pi) * 14))
         self.grab_pt = None
         if self.state in ("grab", "dragmouse"):
             mx, my = get_mouse()
@@ -1360,6 +1414,20 @@ class Pet:
             self.draw_dragon(c, cx, y, s, f, baby=False)
         else:
             self.draw_cat(c, cx, y, s, f)
+
+        if self.state == "peek" and self.timer > 80:
+            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            hy = y - 44 * s
+            wob = math.sin(self.t * 0.25) * 2 * s
+            for k in (-1, 1):
+                px = cx + k * 14 * s
+                py = hy + wob
+                c.create_oval(px - 10 * s, py - 9 * s, px + 10 * s,
+                              py + 9 * s, fill=paw_c, outline="#D9C3A5")
+                for i in (-1, 0, 1):
+                    c.create_oval(px + i * 5 * s - 1.6 * s, py - 7 * s,
+                                  px + i * 5 * s + 1.6 * s, py - 3 * s,
+                                  fill="#FFB6C1", outline="")
 
         if self.state == "study":
             c.create_text(cx - 38 * s, y - 58 * s, text="📖",
@@ -1424,11 +1492,21 @@ class Pet:
             c.create_text(px, ey, text="❤", fill="#FF6B81",
                           font=("Arial", int(10 * s)))
             return True
-        if e == "happy":
+        if e in ("happy", "yum"):
             c.create_arc(px - 6 * s, ey - 7 * s, px + 6 * s, ey + 5 * s,
                          start=20, extent=140, style="arc",
                          outline=line_c, width=2)
             return True
+        if e == "shy":
+            c.create_arc(px - 6 * s, ey - 5 * s, px + 6 * s, ey + 7 * s,
+                         start=200, extent=140, style="arc",
+                         outline=line_c, width=2)
+            return True
+        if e == "sweat":
+            if k > 0:
+                c.create_oval(px + 6 * s, ey - 16 * s, px + 12 * s,
+                              ey - 8 * s, fill="#9BD8F5", outline="")
+            return False
         if e in ("angry", "dizzy"):
             r = 5.5 * s if e == "angry" else 4 * s
             c.create_line(px - r, ey - r * 0.8, px + r, ey + r * 0.8,
@@ -1456,6 +1534,31 @@ class Pet:
             c.create_oval(cx - 6 * s, my - 2 * s, cx + 6 * s, my + 8 * s,
                           fill="#E8747C", outline="")
             c.create_oval(cx - 3 * s, my + 2 * s, cx + 3 * s, my + 8 * s,
+                          fill="#FF9EB5", outline="")
+            return True
+        if e == "yum":
+            c.create_oval(cx - 6 * s, my - 3 * s, cx + 6 * s, my + 7 * s,
+                          fill="#E8747C", outline="")
+            c.create_oval(cx - 1 * s, my + 2 * s, cx + 5 * s, my + 9 * s,
+                          fill="#FF9EB5", outline="")
+            return True
+        if e == "shy":
+            c.create_arc(cx - 4 * s, my - 1 * s, cx, my + 4 * s,
+                         start=180, extent=160, style="arc",
+                         outline=line_c)
+            c.create_arc(cx, my - 1 * s, cx + 4 * s, my + 4 * s,
+                         start=180, extent=160, style="arc",
+                         outline=line_c)
+            return True
+        if e == "sweat":
+            c.create_line(cx - 6 * s, my + 2 * s, cx - 2 * s, my - 1 * s,
+                          cx + 2 * s, my + 3 * s, cx + 6 * s, my,
+                          width=2, fill=line_c)
+            return True
+        if self.state == "yawn":
+            c.create_oval(cx - 7 * s, my - 8 * s, cx + 7 * s, my + 6 * s,
+                          fill="#D9534F", outline="")
+            c.create_oval(cx - 3 * s, my + 1 * s, cx + 3 * s, my + 6 * s,
                           fill="#FF9EB5", outline="")
             return True
         return False
