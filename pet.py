@@ -148,6 +148,8 @@ class Pet:
         self.lbtn = False
         self.lbtn_last = -999
         self.bienao = False
+        self.last_act = 0
+        self.but = None
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -237,7 +239,11 @@ class Pet:
                         "y": -50, "life": 30})
         self.say("喵～好舒服" if self.stage == 2 else "嗷呜～")
 
+    def touch(self):
+        self.last_act = self.t
+
     def on_press(self, e):
+        self.touch()
         if self.state == "sleep":
             self.state = "rest"
             self.say("被吵醒啦")
@@ -291,6 +297,7 @@ class Pet:
         self.show_status()
 
     def on_double(self, e):
+        self.touch()
         if self.click_job is not None:
             self.root.after_cancel(self.click_job)
             self.click_job = None
@@ -372,6 +379,7 @@ class Pet:
         w.bind("<Button-1>", lambda e: w.iconify())
 
     def on_menu(self, e):
+        self.touch()
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="喂清江鱼（20金）", command=self.feed)
         m.add_command(label="商店购物", command=self.open_shop)
@@ -744,6 +752,91 @@ class Pet:
         self.flip_dir = self.facing
         self.say("看我的！")
 
+    # ---------- solo play (自娱自乐) ----------
+    SOLO = {"tail": ("追尾巴！嘿嘿", 130),
+            "butterfly": ("哪来的蝴蝶！？", 320),
+            "sing": ("清清嗓子～", 180),
+            "roll": ("我自己打个滚", 200),
+            "mirror": ("镜子里的猫好帅", 150)}
+
+    def solo_start(self):
+        act = random.choice(tuple(self.SOLO))
+        line, dur = self.SOLO[act]
+        self.state = act
+        self.timer = dur
+        self.say(line, 160)
+        if act == "butterfly":
+            self.but = {"ph": 0.0, "bx": self.x, "by": self.home_y - 90}
+        if act == "roll":
+            self.flip_t = 0
+            self.flip_dir = self.facing
+        if act == "mirror":
+            self.set_expr("smug", dur)
+
+    def _solo_end(self, msg, hp, dizzy=0.0):
+        self.state = "rest"
+        self.timer = random.randint(40, 100)
+        self.happy = min(100.0, self.happy + hp)
+        self.progress += 0.05
+        if dizzy and random.random() < dizzy:
+            self.set_expr("dizzy", 200)
+            self.say("转得好晕…", 200)
+        else:
+            self.say(msg, 180)
+
+    def solo_tick(self):
+        self.timer -= 1
+        if self.state == "tail":
+            if self.timer % 9 == 0:
+                self.facing = -self.facing
+                self.x += self.facing * 1.2
+                self.clamp_pos()
+                self.moving = True
+            if self.timer <= 0:
+                self._solo_end("追尾巴真好玩", 1.5, dizzy=0.3)
+        elif self.state == "sing":
+            if self.timer % 14 == 0:
+                self.fx.append({"type": "note",
+                                "x": random.randint(12, 34),
+                                "y": -70, "life": 50})
+            if self.timer <= 0:
+                self._solo_end("唱完啦，感觉自己帅帅的", 1.0)
+        elif self.state == "mirror":
+            if self.timer <= 0:
+                self._solo_end("镜子里的我最可爱", 1.0)
+        elif self.state == "roll":
+            self.flip_t += 1
+            self.y = self.home_y - int(abs(math.sin(self.flip_t * 0.22)) * 38)
+            self.x += self.flip_dir * 2.6
+            if self.x <= self.L + 40 or self.x >= self.R - 40:
+                self.flip_dir = -self.flip_dir
+            self.clamp_pos()
+            self.facing = self.flip_dir
+            self.moving = True
+            if self.t % 10 == 0:
+                self.fx.append({"type": "dust",
+                                "x": random.randint(-20, 20),
+                                "y": -4, "life": 12})
+            if self.timer <= 0:
+                self.y = self.home_y
+                self._solo_end("打滚真开心！", 1.5)
+        elif self.state == "butterfly":
+            b = self.but
+            b["ph"] += 0.12
+            b["bx"] = self.x + math.sin(b["ph"] * 0.8) * 95
+            b["by"] = (self.home_y - 75 -
+                       abs(math.sin(b["ph"] * 1.7)) * 45)
+            self.target = (b["bx"], self.home_y)
+            self.moving = self.nudge(4.6)
+            d = math.hypot(b["bx"] - self.x, b["by"] - (self.y - 40))
+            if d < 55 and self.timer % 30 == 0:
+                self.say("扑！")
+                self.fx.append({"type": "star", "x": 0, "y": -90,
+                                "life": 20})
+            if self.timer <= 0:
+                self.but = None
+                self._solo_end("蝴蝶飞走啦～下次再玩", 2.0)
+
     # ---------- movement ----------
     def place_window(self):
         cx = self.x + W / 2 - (W / 2)
@@ -789,22 +882,25 @@ class Pet:
             self.laser_tick()
         win_down = bool(user32.GetAsyncKeyState(0x5B) & 0x8000) or \
             bool(user32.GetAsyncKeyState(0x5C) & 0x8000)
-        if win_down and not self.win_down and self.t - self.win_last > 90 \
-                and self.state != "sleep":
-            self.win_last = self.t
-            self.say("清江鱼累了吗？那休息吧", 240)
-            self.set_expr("happy", 200)
-        self.win_down = win_down
-        lbtn = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
-        if lbtn and not self.lbtn and self.t - self.lbtn_last > 150 \
-                and self.state != "sleep" and not self.laser_on:
-            mx, my = get_mouse()
-            on_pet = (self.x - W // 2 < mx < self.x + W // 2 and
-                      self.y - H + 80 < my < self.y + H - 80)
-            if not on_pet:
-                self.lbtn_last = self.t
+        if win_down and not self.win_down:
+            self.last_act = self.t
+            if self.t - self.win_last > 90 and self.state != "sleep":
+                self.win_last = self.t
                 self.say("清江鱼累了吗？那休息吧", 240)
                 self.set_expr("happy", 200)
+        self.win_down = win_down
+        lbtn = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+        if lbtn and not self.lbtn:
+            self.last_act = self.t
+            if self.t - self.lbtn_last > 150 and self.state != "sleep" \
+                    and not self.laser_on:
+                mx, my = get_mouse()
+                on_pet = (self.x - W // 2 < mx < self.x + W // 2 and
+                          self.y - H + 80 < my < self.y + H - 80)
+                if not on_pet:
+                    self.lbtn_last = self.t
+                    self.say("清江鱼累了吗？那休息吧", 240)
+                    self.set_expr("happy", 200)
         self.lbtn = lbtn
         if self.thinking and self.t > self.think_until:
             self.thinking = False
@@ -855,7 +951,10 @@ class Pet:
                 self.state = "sleep"
             else:
                 roll = random.random()
-                if self.follow_on and roll < 0.55 and \
+                idle_long = self.t - self.last_act > 2700
+                if idle_long and roll < 0.5:
+                    self.solo_start()
+                elif self.follow_on and roll < 0.55 and \
                         not self.laser_on and not self.bienao:
                     self.state = "wiggle"
                     self.timer = 22
@@ -949,6 +1048,8 @@ class Pet:
             self.study_tick()
         elif self.state == "work":
             self.work_tick()
+        elif self.state in ("tail", "butterfly", "sing", "roll", "mirror"):
+            self.solo_tick()
 
         self.update_mood()
         self.place_window()
@@ -1180,6 +1281,14 @@ class Pet:
             c.create_rectangle(cx - 26, y - 88, cx - 26 + int(52 * fr),
                                y - 82, fill="#FFC94A", outline="")
 
+        if self.state == "butterfly" and self.but:
+            b = self.but
+            bx = cx + (b["bx"] - self.x)
+            by = cy + (b["by"] - self.y)
+            if 8 < bx < W - 8 and 8 < by < H - 8:
+                flap = 1 + math.sin(b["ph"] * 6) * 0.25
+                c.create_text(bx, by, text="🦋",
+                              font=("Segoe UI Emoji", int(16 * flap)))
         if self.state == "play" and self.ball:
             b = self.ball
             bx, by = cx + (b["x"] - self.x), cy + (b["y"] - self.y)
@@ -1509,6 +1618,11 @@ class Pet:
                 c.create_text(cx + e["x"] + math.sin(a * 0.4) * 6,
                               cy + e["y"] - (40 - a),
                               text="🪙", font=("Segoe UI Emoji", 15))
+            elif life["type"] == "note":
+                c.create_text(cx + e["x"] + math.sin(a * 0.2) * 6,
+                              cy + e["y"] - (50 - a) * 0.9,
+                              text="♪", fill="#7B8FBF",
+                              font=("Arial", 14))
             elif life["type"] == "dust":
                 r = 2 + (12 - a) * 0.4
                 c.create_oval(cx + e["x"] - r, cy + e["y"] - r * 0.6,
