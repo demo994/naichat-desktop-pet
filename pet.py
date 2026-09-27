@@ -2,6 +2,7 @@
 """奶龙进化桌宠：从奶龙宝宝养大，最终进化成奶猫。
 会间隔追鼠标，追到会咬着拉扯光标。右键打开菜单。"""
 
+import bisect
 import ctypes
 import ctypes.wintypes
 import json
@@ -92,6 +93,7 @@ class Pet:
         self.money = 50
         self.thirst = 0.0
         self.stats = {"智力": 0.0, "魅力": 0.0, "力量": 0.0}
+        self.lrc_off = {}
         self.load()
         self.follow_on = True
         self.pull_on = True
@@ -163,7 +165,8 @@ class Pet:
         self.song_t0 = 0.0
         self.song_pos0 = 0
         self.lyric = []
-        self.lyric_i = 0
+        self._lrc_times = []
+        self.lyric_i = -1
         self.cur_line = ""
         self.prev_line = ""
         self.prev_until = 0
@@ -172,6 +175,10 @@ class Pet:
         self.ctrl_win = None
         self._btn_pause = None
         self._lrc_pending = None
+        self.lyric_win = None
+        self._lyric_cv = None
+        self.lrc_off_cur = 0
+        self.lrc_tag_cur = 0
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -229,6 +236,8 @@ class Pet:
             st = d.get("stats", {})
             for kk in self.stats:
                 self.stats[kk] = st.get(kk, 0.0)
+            self.lrc_off = {str(k): int(v) for k, v in
+                            d.get("lrc_off", {}).items()}
         except Exception:
             pass
 
@@ -239,7 +248,8 @@ class Pet:
                            "total_secs": self.total_secs,
                            "hunger": self.hunger, "happy": self.happy,
                            "money": self.money, "thirst": self.thirst,
-                           "stats": self.stats},
+                           "stats": self.stats,
+                           "lrc_off": self.lrc_off},
                           f, ensure_ascii=False)
         except Exception:
             pass
@@ -612,6 +622,7 @@ class Pet:
 
     def quit_app(self):
         self.stop_music(quiet=True)
+        self.hide_lyric_win()
         self.root.destroy()
 
     def toggle_pull(self):
@@ -677,11 +688,17 @@ class Pet:
     def load_lrc(self, stem):
         p = os.path.join(self.music_dir(), stem + ".lrc")
         out = []
+        off = 0
         try:
             with open(p, encoding="utf-8", errors="ignore") as f:
                 for line in f:
+                    line = line.strip()
+                    m = re.match(r"\[offset:\s*(-?\d+)\]", line, re.I)
+                    if m:
+                        off = int(m.group(1))
+                        continue
                     for m in re.finditer(r"\[(\d+):(\d+)[.:](\d+)\](.*)",
-                                         line.strip()):
+                                         line):
                         ms = (int(m.group(1)) * 60 + int(m.group(2))) * 1000 \
                             + int(m.group(3)) * 10
                         txt = m.group(4).strip()
@@ -691,6 +708,18 @@ class Pet:
             return []
         out.sort()
         return out
+
+    def lrc_tag_offset(self, stem):
+        p = os.path.join(self.music_dir(), stem + ".lrc")
+        try:
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    m = re.match(r"\[offset:\s*(-?\d+)\]", line.strip(), re.I)
+                    if m:
+                        return int(m.group(1))
+        except OSError:
+            pass
+        return 0
 
     @staticmethod
     def _lrc_norm(s):
@@ -796,15 +825,12 @@ class Pet:
     def apply_fetched(self, lyr, fname):
         if self.song_file != fname:
             return
-        pos = self.song_pos0 + int((time.time() - self.song_t0) * 1000)
-        self.lyric = lyr
-        self.lyric_i = 0
-        for i, (ms, _) in enumerate(lyr):
-            if ms > pos:
-                self.lyric_i = i
-                break
-        else:
-            self.lyric_i = len(lyr)
+        pos = self.song_pos0 + int((time.time() - self.song_t0) * 1000) \
+            + self.lrc_off_cur
+        self.set_lyric(lyr)
+        self.lyric_i = bisect.bisect_right(self._lrc_times, pos) - 1
+        if self.lyric_i >= 0:
+            self.cur_line = self.lyric[self.lyric_i][1]
         self.say("歌词找到啦～♪", 150)
 
 
@@ -821,6 +847,10 @@ class Pet:
                 i += 1
         with open(dst, "wb") as f:
             f.write(b"ID3\x03\x00\x00\x00\x00\x00\x00" + d[i:])
+
+    def set_lyric(self, lyr):
+        self.lyric = lyr
+        self._lrc_times = [ms for ms, _ in lyr]
 
     def start_music(self, fname):
         if self.state == "sleep":
@@ -854,10 +884,13 @@ class Pet:
         self.song_file = fname
         self.song_t0 = time.time()
         self.song_pos0 = 0
-        self.lyric = self.load_lrc(stem)
+        self.lrc_off_cur = self.lrc_off.get(stem, 0) + \
+            self.lrc_tag_offset(stem)
+        self.lrc_tag_cur = self.lrc_tag_offset(stem)
+        self.set_lyric(self.load_lrc(stem))
         if not self.lyric:
             self.fetch_lrc_async(stem, fname)
-        self.lyric_i = 0
+        self.lyric_i = -1
         self.cur_line = ""
         self.prev_line = ""
         self.line_no = 0
@@ -867,6 +900,8 @@ class Pet:
         self.say_line("music_start", 160)
         self.ensure_ctrl_win()
         self.place_ctrl()
+        self.ensure_lyric_win()
+        self.place_lyric()
         self.fx.append({"type": "note", "x": random.randint(-20, 20),
                         "y": -80, "life": 50})
 
@@ -877,11 +912,13 @@ class Pet:
         self.mci("close petmus")
         self.song = None
         self.song_file = None
-        self.lyric = []
+        self.set_lyric([])
+        self.lyric_i = -1
         self.cur_line = ""
         self.prev_line = ""
         self._lrc_pending = None
         self.hide_ctrl_win()
+        self.hide_lyric_win()
         if self.state == "music":
             self.state = "rest"
             self.timer = random.randint(40, 90)
@@ -903,6 +940,10 @@ class Pet:
         w.configure(bg="#F2E3C6")
         bs = dict(relief="flat", bg="#FFE9B8", activebackground="#FFD98A",
                   font=("Microsoft YaHei", 10), width=3, bd=0)
+        tk.Button(w, text="−½", command=lambda: self.adjust_lrc_off(-500),
+                  **bs).pack(side="left", padx=3, pady=3)
+        tk.Button(w, text="＋½", command=lambda: self.adjust_lrc_off(500),
+                  **bs).pack(side="left", padx=3, pady=3)
         self._btn_pause = tk.Button(w, text="⏸", command=self.toggle_pause,
                                     **bs)
         self._btn_pause.pack(side="left", padx=3, pady=3)
@@ -919,13 +960,102 @@ class Pet:
             except tk.TclError:
                 pass
 
+    LRCW, LRCH = 360, 74
+
+    def ensure_lyric_win(self):
+        if self.lyric_win is not None:
+            try:
+                if self.lyric_win.winfo_exists():
+                    self.lyric_win.deiconify()
+                    return
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.wm_attributes("-transparentcolor", COLORKEY)
+        cv = tk.Canvas(w, width=self.LRCW, height=self.LRCH, bg=COLORKEY,
+                       highlightthickness=0)
+        cv.pack()
+        self.lyric_win = w
+        self._lyric_cv = cv
+
+    def hide_lyric_win(self):
+        if self.lyric_win is not None:
+            try:
+                self.lyric_win.withdraw()
+            except tk.TclError:
+                pass
+
+    def place_lyric(self):
+        try:
+            if self.lyric_win is None or not self.lyric_win.winfo_viewable():
+                return
+        except tk.TclError:
+            return
+        px = int(max(self.L + self.LRCW // 2,
+                     min(self.R - self.LRCW // 2, self.x)))
+        py = int(self.y - H - 6)
+        if py < self.T + 4:
+            py = self.T + 4
+        self.lyric_win.geometry("+%d+%d" % (px - self.LRCW // 2, py))
+
+    def draw_lyric_win(self):
+        c = self._lyric_cv
+        if c is None or self.song is None:
+            return
+        c.delete("all")
+        W2, H2 = self.LRCW, self.LRCH
+        c.create_rectangle(6, 6, W2 - 6, H2 - 6, fill="#2B2440",
+                           outline="#4C4270", width=1)
+        c.create_line(6, 8, 20, 8, fill="#FFD98A")
+        c.create_line(6, 8, 6, 22, fill="#FFD98A")
+        c.create_line(W2 - 6, H2 - 8, W2 - 20, H2 - 8, fill="#FFD98A")
+        c.create_line(W2 - 6, H2 - 8, W2 - 6, H2 - 22, fill="#FFD98A")
+        if not self.cur_line:
+            return
+        cur = self.cur_line
+        parts = [cur[:16], cur[16:32]] if len(cur) > 16 else [cur]
+        col = self.LRC_COLORS[self.line_no % len(self.LRC_COLORS)]
+        top = H2 // 2 + (0 if len(parts) == 1 else -8)
+        if self.prev_line and self.t < self.prev_until:
+            c.create_text(W2 // 2, top - 22, text=self.prev_line[:16],
+                          fill="#6E6390", font=("Microsoft YaHei", 8))
+        for i, seg in enumerate(parts):
+            yy = top + i * 17
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                c.create_text(W2 // 2 + dx, yy + dy, text=seg, fill="white",
+                              font=("Microsoft YaHei", 11, "bold"))
+            c.create_text(W2 // 2, yy, text=seg, fill=col,
+                          font=("Microsoft YaHei", 11, "bold"))
+        w0 = 13 * len(parts[0]) + 4
+        c.create_text(W2 // 2 - w0 // 2 - 11, top, text="♪", fill=col,
+                      font=("Arial", 9))
+        c.create_text(W2 // 2 + w0 // 2 + 11, top, text="♪", fill=col,
+                      font=("Arial", 9))
+        if self.lrc_off_cur:
+            c.create_text(W2 - 14, 14, anchor="e",
+                          text="%+.1fs" % (self.lrc_off_cur / 1000.0),
+                          fill="#FFD98A", font=("Microsoft YaHei", 7))
+
+    def adjust_lrc_off(self, delta):
+        if self.song_file is None:
+            return
+        stem = os.path.splitext(self.song_file)[0]
+        self.lrc_off_cur = max(-15000, min(15000,
+                                           self.lrc_off_cur + delta))
+        self.lrc_off[stem] = self.lrc_off_cur - self.lrc_tag_cur
+        self.lyric_i = -2
+        self.save()
+        self.say("歌词校准 %+.1f 秒" % (self.lrc_off_cur / 1000.0), 120)
+
     def place_ctrl(self):
         try:
             if self.ctrl_win is None or not self.ctrl_win.winfo_viewable():
                 return
         except tk.TclError:
             return
-        px = int(max(self.L + 60, min(self.R - 60, self.x)) - 62)
+        px = int(max(self.L + 80, min(self.R - 80, self.x)) - 82)
         self.ctrl_win.geometry("+%d+%d" % (px, int(self.home_y) - 4))
 
     def set_line(self, txt):
@@ -979,10 +1109,12 @@ class Pet:
             self.mci("close petmus")
             self.song = None
             self.song_file = None
-            self.lyric = []
+            self.set_lyric([])
+            self.lyric_i = -1
             self.cur_line = ""
             self.prev_line = ""
             self.hide_ctrl_win()
+            self.hide_lyric_win()
             if self.state == "music":
                 self.state = "rest"
                 self.timer = random.randint(40, 90)
@@ -993,16 +1125,17 @@ class Pet:
                             "life": 40})
             return
         try:
-            pos = self.song_pos0 + int((time.time() - self.song_t0) * 1000)
+            pos = self.song_pos0 + int((time.time() - self.song_t0) * 1000) \
+                + self.lrc_off_cur
         except (TypeError, ValueError):
-            pos = 0
+            pos = self.lrc_off_cur
         if self.lyric:
-            for i, (ms, txt) in enumerate(self.lyric):
-                if ms <= pos:
-                    self.set_line(txt)
-                    self.lyric_i = i + 1
-                else:
-                    break
+            i = bisect.bisect_right(self._lrc_times, pos) - 1 \
+                if self._lrc_times else -1
+            if i != self.lyric_i:
+                self.lyric_i = i
+                if i >= 0:
+                    self.set_line(self.lyric[i][1])
         elif self.t % 160 == 0:
             self.set_line(random.choice(Pet.LINES["sing_la"]))
         if self.state in ("rest", "pick"):
@@ -1474,6 +1607,8 @@ class Pet:
         self.music_tick()
         if self.song and self.t % 6 == 0:
             self.place_ctrl()
+            self.place_lyric()
+            self.draw_lyric_win()
         win_down = bool(user32.GetAsyncKeyState(0x5B) & 0x8000) or \
             bool(user32.GetAsyncKeyState(0x5C) & 0x8000)
         if win_down and not self.win_down:
@@ -2030,35 +2165,10 @@ class Pet:
                          start=30, extent=120, style="arc", outline="#D65A73")
             c.create_arc(bx - 10, by - 10, bx + 10, by + 10,
                          start=200, extent=120, style="arc", outline="#D65A73")
-        self.draw_lyric(c, cx)
         self.draw_bubble(c, cx)
         self.draw_fx(c, cx, y)
 
     LRC_COLORS = ("#D65A73", "#B4690E", "#5B8DB8", "#6B8E4E", "#8A6BB3")
-
-    def draw_lyric(self, c, cx):
-        if not self.song or not self.cur_line:
-            return
-        cur = self.cur_line
-        parts = [cur[:13], cur[13:26]] if len(cur) > 13 else [cur]
-        col = self.LRC_COLORS[self.line_no % len(self.LRC_COLORS)]
-        top = 46 if len(parts) == 1 else 40
-        if self.prev_line and self.t < self.prev_until and \
-                self.t >= self.say_until:
-            c.create_text(cx, 36, text=self.prev_line[:13],
-                          fill="#D9CFBC", font=("Microsoft YaHei", 8))
-        for i, seg in enumerate(parts):
-            yy = top + i * 15
-            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                c.create_text(cx + dx, yy + dy, text=seg, fill="white",
-                              font=("Microsoft YaHei", 11, "bold"))
-            c.create_text(cx, yy, text=seg, fill=col,
-                          font=("Microsoft YaHei", 11, "bold"))
-        w0 = 13 * len(parts[0]) + 4
-        c.create_text(cx - w0 // 2 - 9, top, text="♪", fill=col,
-                      font=("Arial", 9))
-        c.create_text(cx + w0 // 2 + 9, top, text="♪", fill=col,
-                      font=("Arial", 9))
 
     def draw_bubble(self, c, cx):
         if self.t >= self.say_until or not self.say_text:
