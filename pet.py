@@ -185,6 +185,8 @@ class Pet:
         self.press_t = 0.0
         self._status_w = None
         self._status_vars = []
+        self._evo_btn = None
+        self._evo_said = set()
         self.evo_times = [600, 1800]
         self.evo_needs = [5, 12]
 
@@ -328,7 +330,10 @@ class Pet:
         "thirsty": ("好渴…想喝快乐水！", "嘴巴干干，想找水水", "有水吗？快乐水最好"),
         "water_remind": ("主人，喝口水休息一下吧！", "盯了你这么久，该喝水啦", "工作这么久，喝口水嘛"),
         "early_sleepy": ("好困…先睡了", "眼皮打架了…晚安", "清晨的猫只想睡觉"),
-        "evo_soon": ("感觉要进化了！", "身体里有股暖流…", "要突破了要突破了！"),
+        "evo_soon": ("感觉快了…再喂我一点吧", "身体里有股暖流…", "离进化又近了一步！"),
+        "evo_ready": ("进化条件达成啦！打开状态面板点「进化」按钮～",
+                      "我…我要进化了！快去状态面板按进化按钮！",
+                      "感觉充满了力量！点状态面板的进化按钮试试！"),
         "evo_done": ("进化成{name}！", "睁开眼睛，世界都不一样了", "全新形态——{name}！"),
         # 自娱自乐
         "tail": ("追尾巴！嘿嘿", "今天非要抓住这条尾巴不可", "尾巴别跑！"),
@@ -524,11 +529,28 @@ class Pet:
         try:
             if not self._status_w.winfo_exists():
                 self._status_w = None
+                self._evo_btn = None
                 return
             for var, s in zip(self._status_vars, self.status_lines()):
                 var.set(s)
+            if self._evo_btn is not None:
+                self.sync_evo_btn()
         except tk.TclError:
             self._status_w = None
+            self._evo_btn = None
+
+    def sync_evo_btn(self):
+        names = {0: "奶龙宝宝", 1: "少年奶龙", 2: "奶猫"}
+        if self.stage >= 2:
+            text, st = "已是最终形态 🐱", "disabled"
+        elif self.can_evolve():
+            text = ("✨ 进化！（%s → %s）" %
+                    (names[self.stage], names[self.stage + 1]))
+            st = "normal"
+        else:
+            left = max(0.0, self.evo_needs[self.stage] - self.progress)
+            text, st = "进化条件未满足（还差 %.0f 进度）" % left, "disabled"
+        self._evo_btn.config(text=text, state=st)
 
     def show_status(self):
         if self._status_w is not None:
@@ -549,6 +571,14 @@ class Pet:
             tk.Label(w, textvariable=var, font=("Microsoft YaHei", 10),
                      padx=16, pady=4, anchor="w").pack(fill="x")
             self._status_vars.append(var)
+        btn = tk.Button(w, font=("Microsoft YaHei", 10, "bold"),
+                        bg="#FFD98A", fg="#5A4632", relief="flat",
+                        padx=12, pady=3, cursor="hand2",
+                        command=self.user_evolve)
+        btn.pack(pady=(2, 8))
+        btn.bind("<Button-1>", lambda e: "break")
+        self._evo_btn = btn
+        self.sync_evo_btn()
         w.resizable(False, False)
         w.bind("<Button-1>", lambda e: w.iconify())
 
@@ -1959,17 +1989,32 @@ class Pet:
     def evo_check(self):
         pass
 
-    def evo_try(self):
+    def can_evolve(self):
         if self.stage >= 2:
-            return
+            return False
         need_time = self.total_secs >= self.evo_times[self.stage]
         need_feed = self.progress >= self.evo_needs[self.stage]
-        if (need_time and need_feed) or self.progress >= self.evo_needs[self.stage] * 2:
-            self.stage += 1
-            self.fx.append({"type": "flash", "x": 0, "y": -20, "life": 45})
-            names = ["", "少年奶龙", "奶猫"]
-            self.say_line("evo_done", 300, name=names[self.stage])
-            self.save()
+        return (need_time and need_feed) or \
+            self.progress >= self.evo_needs[self.stage] * 2
+
+    def evo_partial(self):
+        if self.stage >= 2:
+            return False
+        return (self.progress >= self.evo_needs[self.stage] or
+                self.total_secs >= self.evo_times[self.stage])
+
+    def user_evolve(self):
+        if not self.can_evolve():
+            self.say("还没到进化的时机…再陪陪我吧", 150)
+            return
+        self.stage += 1
+        self.fx.append({"type": "flash", "x": 0, "y": -20, "life": 45})
+        names = ["", "少年奶龙", "奶猫"]
+        self.say_line("evo_done", 300, name=names[self.stage])
+        self._evo_said.discard("soon%d" % (self.stage - 1))
+        self._evo_said.discard("ready%d" % (self.stage - 1))
+        self.refresh_status()
+        self.save()
 
     def update_mood(self):
         if self.state in ("bite", "pounce", "grab", "dragmouse", "play",
@@ -1982,11 +2027,16 @@ class Pet:
                 self.timer = 90
         elif self.thirst > 75 and self.t > self.say_until:
             self.say_line("thirsty", 240)
-        elif self.total_secs > 100 and self.stage == 0 and \
-                (self.progress >= self.evo_needs[0] or
-                 self.total_secs >= self.evo_times[0]):
-            self.say_line("evo_soon", 240)
-            self.evo_try()
+        elif self.total_secs > 100 and self.can_evolve():
+            key = "ready%d" % self.stage
+            if key not in self._evo_said and self.t > self.say_until:
+                self._evo_said.add(key)
+                self.say_line("evo_ready", 300)
+        elif self.total_secs > 100 and self.evo_partial():
+            key = "soon%d" % self.stage
+            if key not in self._evo_said and self.t > self.say_until:
+                self._evo_said.add(key)
+                self.say_line("evo_soon", 300)
 
     # ---------- drawing ----------
     def draw(self):
