@@ -50,6 +50,34 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_LAYERED = 0x00080000
 
+# 商品：名称, 图标, 价格, 效果类型, 数值, 心情, 属性名
+SHOP = [
+    ("清江鱼", "🐟", 20, "full", 40, 6, None),
+    ("小鱼干", "🍤", 8, "full", 15, 2, None),
+    ("奶油蛋糕", "🍰", 30, "full", 25, 8, None),
+    ("红烧泡面", "🍜", 12, "full", 22, 4, None),
+    ("矿泉水", "💧", 5, "water", 30, 0, None),
+    ("珍珠奶茶", "🧋", 15, "water", 28, 6, None),
+    ("冰美式咖啡", "☕", 18, "water", 22, 2, None),
+    ("快乐水", "🥤", 12, "water", 24, 8, None),
+    ("《十万个为什么》", "📖", 30, "stat", 1.0, 2, "智力"),
+    ("限量口红", "💄", 30, "stat", 1.0, 2, "魅力"),
+    ("小哑铃", "🏋️", 30, "stat", 1.0, 2, "力量"),
+]
+
+# 工作：名称, 图标, 要求属性, 要求等级, 工资, 工时(tick)
+JOBS = [
+    ("发传单", "📄", None, 0, 15, 240),
+    ("洗碗工", "🧽", None, 0, 18, 260),
+    ("摆摊烤肠", "🌭", None, 0, 22, 280),
+    ("家教", "📚", "智力", 3, 45, 300),
+    ("搬运工", "📦", "力量", 3, 45, 300),
+    ("驻唱歌手", "🎤", "魅力", 5, 65, 320),
+    ("健身教练", "🏋️", "力量", 6, 80, 340),
+    ("程序员", "💻", "智力", 7, 110, 380),
+    ("带货主播", "📱", "魅力", 8, 120, 380),
+]
+
 
 class Pet:
     def __init__(self):
@@ -57,6 +85,9 @@ class Pet:
         self.progress = 0.0
         self.total_secs = 0.0
         self.hunger = 0.0
+        self.money = 50
+        self.thirst = 0.0
+        self.stats = {"智力": 0.0, "魅力": 0.0, "力量": 0.0}
         self.load()
         self.follow_on = True
         self.pull_on = True
@@ -109,6 +140,9 @@ class Pet:
         self.pokes = []
         self.flip_t = 0
         self.flip_dir = 1
+        self.job = None
+        self.study = None
+        self._shop = None
         self.evo_times = [600, 1800]
         self.evo_needs = [5, 12]
 
@@ -155,6 +189,11 @@ class Pet:
             self.total_secs = d.get("total_secs", 0.0)
             self.hunger = d.get("hunger", 0.0)
             self.happy = d.get("happy", 60.0)
+            self.money = d.get("money", 50)
+            self.thirst = d.get("thirst", 0.0)
+            st = d.get("stats", {})
+            for kk in self.stats:
+                self.stats[kk] = st.get(kk, 0.0)
         except Exception:
             pass
 
@@ -163,7 +202,9 @@ class Pet:
             with open(self.path(), "w", encoding="utf-8") as f:
                 json.dump({"stage": self.stage, "progress": self.progress,
                            "total_secs": self.total_secs,
-                           "hunger": self.hunger, "happy": self.happy},
+                           "hunger": self.hunger, "happy": self.happy,
+                           "money": self.money, "thirst": self.thirst,
+                           "stats": self.stats},
                           f, ensure_ascii=False)
         except Exception:
             pass
@@ -259,8 +300,13 @@ class Pet:
         need = "MAX" if self.stage >= 2 else \
             f"{self.progress:.1f}/{self.evo_needs[self.stage]}"
         lines = [f"形态：{names[self.stage]}",
-                 f"饥饿：{bar(self.hunger)}",
+                 f"金币：{self.money} 🪙",
+                 f"饱腹：{bar(100 - self.hunger)}",
+                 f"水分：{bar(100 - self.thirst)}",
                  f"心情：{bar(self.happy)}",
+                 f"智力 Lv.{int(self.stats['智力'])}"
+                 f"　魅力 Lv.{int(self.stats['魅力'])}"
+                 f"　力量 Lv.{int(self.stats['力量'])}",
                  f"进化进度：{need}",
                  f"累计在线：{secs // 3600}小时{secs % 3600 // 60}分"]
         w = tk.Toplevel(self.root)
@@ -273,7 +319,29 @@ class Pet:
 
     def on_menu(self, e):
         m = tk.Menu(self.root, tearoff=0)
-        m.add_command(label="喂清江鱼", command=self.feed)
+        m.add_command(label="喂清江鱼（20金）", command=self.feed)
+        m.add_command(label="商店购物", command=self.open_shop)
+        lm = tk.Menu(m, tearoff=0)
+        lm.add_command(label="读书（智力+）",
+                       command=lambda: self.start_study("智力"))
+        lm.add_command(label="唱歌（魅力+）",
+                       command=lambda: self.start_study("魅力"))
+        lm.add_command(label="健身（力量+）",
+                       command=lambda: self.start_study("力量"))
+        m.add_cascade(label="学习成长", menu=lm)
+        jm = tk.Menu(m, tearoff=0)
+        for jb in JOBS:
+            nm, icon, stat, req, pay, dur = jb
+            if stat:
+                label = "%s%s %d金 · 需%sLv.%d" % (icon, nm, pay, stat, req)
+                ok = int(self.stats[stat]) >= req
+            else:
+                label = "%s%s %d金" % (icon, nm, pay)
+                ok = True
+            jm.add_command(label=label,
+                           state=("normal" if ok else "disabled"),
+                           command=lambda j=jb: self.start_work(j))
+        m.add_cascade(label="打工赚钱", menu=jm)
         m.add_command(label="摸摸头", command=self.pat)
         m.add_command(label="玩毛线球", command=self.start_play)
         m.add_command(label=("激光逗猫棒：开" if self.laser_on
@@ -386,15 +454,162 @@ class Pet:
                 self.kill_laser()
 
     def feed(self):
-        self.hunger = max(0.0, self.hunger - 40)
-        self.progress += 1.0
-        self.happy = min(100.0, self.happy + 6)
+        self.buy(SHOP[0])
+
+    # ---------- shop ----------
+    def buy(self, item):
+        name, icon, cost, kind, val, hp, stat = item
+        if self.money < cost:
+            self.say("金币不够…去打工赚点吧", 220)
+            self.set_expr("sad", 200)
+            return False
+        self.money -= cost
+        if kind == "full":
+            self.hunger = max(0.0, self.hunger - val)
+            self.say(f"{name}！好好吃！")
+        elif kind == "water":
+            self.thirst = max(0.0, self.thirst - val)
+            self.say(f"咕嘟咕嘟…{name}真解渴")
+        else:
+            old = int(self.stats[stat])
+            self.stats[stat] += val
+            new = int(self.stats[stat])
+            if new > old:
+                self.say(f"{stat}升到 Lv.{new}！解锁更多工作！", 260)
+                self.fx.append({"type": "flash", "x": 0, "y": -20,
+                                "life": 45})
+            else:
+                self.say(f"用了{name}，{stat}见长")
+        self.happy = min(100.0, self.happy + hp)
+        self.progress += 0.1
         self.fx.append({"type": "food", "x": 0, "y": -50, "life": 40})
         self.set_expr("love" if self.happy > 90 else "happy", 200)
-        self.say("清江鱼！最爱了！")
         if self.state in ("idle", "rest", "wander"):
             self.state = "rest"
             self.timer = 40
+        return True
+
+    def open_shop(self):
+        if self._shop is not None:
+            try:
+                if self._shop.winfo_exists():
+                    self._shop.lift()
+                    return
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(self.root)
+        self._shop = w
+        w.title("奶猫小卖部")
+        w.attributes("-topmost", True)
+        tk.Label(w, text="买了就地吃掉～",
+                 font=("Microsoft YaHei", 9), fg="#888").pack(
+                     anchor="w", padx=12, pady=(8, 0))
+        top = tk.Label(w, font=("Microsoft YaHei", 11, "bold"), anchor="w")
+        top.pack(fill="x", padx=12, pady=(2, 6))
+        btns = []
+
+        def refresh():
+            top.config(text="💰 金币：%d" % self.money)
+            for b, it in btns:
+                b.config(state=("normal" if self.money >= it[2]
+                                else "disabled"))
+
+        for it in SHOP:
+            row = tk.Frame(w)
+            row.pack(fill="x", padx=10, pady=1)
+            if it[3] == "stat":
+                tip = "%s %s　%d金　%s+1级" % (it[1], it[0], it[2], it[6])
+            else:
+                k = "饱腹" if it[3] == "full" else "水分"
+                tip = "%s %s　%d金　%s+%d" % (it[1], it[0], it[2], k, it[4])
+            tk.Label(row, text=tip, width=26, anchor="w",
+                     font=("Microsoft YaHei", 10)).pack(side="left")
+            b = tk.Button(row, text="买", width=4,
+                          command=lambda i=it: (self.buy(i), refresh()))
+            b.pack(side="right")
+            btns.append((b, it))
+        refresh()
+        w.resizable(False, False)
+
+    # ---------- study & work ----------
+    def _can_act(self):
+        if self.state == "sleep":
+            self.say("Zzz…睡着干不了活")
+            return False
+        if self.state in ("work", "study"):
+            self.say("手上这事还没做完！")
+            return False
+        if self.hunger > 80 or self.thirst > 80:
+            self.say("饿渴得没力气…先喂点吃的")
+            self.set_expr("sad", 200)
+            return False
+        return True
+
+    def start_study(self, stat):
+        if not self._can_act():
+            return
+        self.state = "study"
+        self.study = stat
+        self.timer = 270
+        self.say(f"开始修炼{stat}！")
+
+    def study_tick(self):
+        self.timer -= 1
+        if self.timer % 60 == 30:
+            self.say(random.choice(("认真中…", "知识就是清江鱼！",
+                                    "学到了学到了")), 80)
+        if self.timer <= 0:
+            gain = random.uniform(0.7, 1.0)
+            old = int(self.stats[self.study])
+            self.stats[self.study] += gain
+            new = int(self.stats[self.study])
+            self.hunger = min(100.0, self.hunger + 4)
+            self.thirst = min(100.0, self.thirst + 5)
+            self.progress += 0.2
+            if new > old:
+                self.say(f"{self.study}升到 Lv.{new}！解锁更多工作！", 260)
+                self.fx.append({"type": "flash", "x": 0, "y": -20,
+                                "life": 45})
+                self.set_expr("surprised", 160)
+            else:
+                self.say(f"{self.study} +{gain:.1f}（Lv.{new}）", 220)
+                self.set_expr("happy", 160)
+            self.study = None
+            self.state = "rest"
+            self.timer = 60
+
+    def start_work(self, job):
+        if not self._can_act():
+            return
+        if job[2] and int(self.stats[job[2]]) < job[3]:
+            self.say("还没解锁…先去练%s！" % job[2], 220)
+            self.set_expr("sad", 180)
+            return
+        self.state = "work"
+        self.job = job
+        self.timer = job[5]
+        self.say(f"上班去：{job[0]}！")
+
+    def work_tick(self):
+        self.timer -= 1
+        if self.timer % 90 == 45:
+            self.say(random.choice(("搬砖中…", "努力赚钱！",
+                                    "为了清江鱼！")), 80)
+        if self.timer <= 0:
+            name, icon, stat, req, pay, dur = self.job
+            if stat:
+                pay += max(0, int((self.stats[stat] - req) // 2))
+            self.money += pay
+            self.hunger = min(100.0, self.hunger + 8)
+            self.thirst = min(100.0, self.thirst + 10)
+            self.happy = max(0.0, self.happy - 2)
+            self.progress += 0.3
+            self.job = None
+            self.state = "rest"
+            self.timer = 80
+            self.set_expr("happy", 180)
+            self.say(f"上班赚到了 {pay} 金币！🪙", 240)
+            self.fx.append({"type": "coin", "x": 0, "y": -60, "life": 40})
 
     def start_play(self):
         if self.state == "sleep":
@@ -496,6 +711,7 @@ class Pet:
         if self.t % 30 == 0:
             self.total_secs += 1
             self.hunger = min(100, self.hunger + 0.15)
+            self.thirst = min(100, self.thirst + 0.2)
             self.happy = max(0.0, self.happy - 0.04)
         if self.remind_on and time.time() > self.remind_next:
             self.remind_next += 3600
@@ -639,6 +855,10 @@ class Pet:
             self.come_tick()
         elif self.state == "flip":
             self.flip_tick()
+        elif self.state == "study":
+            self.study_tick()
+        elif self.state == "work":
+            self.work_tick()
 
         self.update_mood()
         self.place_window()
@@ -797,10 +1017,13 @@ class Pet:
             self.save()
 
     def update_mood(self):
-        if self.state in ("bite", "pounce", "grab", "dragmouse", "play"):
+        if self.state in ("bite", "pounce", "grab", "dragmouse", "play",
+                          "work", "study"):
             return
         if self.hunger > 75 and self.t > self.say_until:
-            self.say("好饿…想吃清江鱼", 240)
+            self.say("好饿…商店买条清江鱼吧", 240)
+        elif self.thirst > 75 and self.t > self.say_until:
+            self.say("好渴…想喝快乐水！", 240)
         elif self.total_secs > 100 and self.stage == 0 and \
                 (self.progress >= self.evo_needs[0] or
                  self.total_secs >= self.evo_times[0]):
@@ -825,7 +1048,7 @@ class Pet:
             self._expr = self.expr
         elif self.state == "sleep":
             self._expr = "sleepy"
-        elif self.hunger > 75 or self.happy < 25:
+        elif self.hunger > 75 or self.thirst > 75 or self.happy < 25:
             self._expr = "sad"
         else:
             self._expr = "normal"
@@ -854,6 +1077,18 @@ class Pet:
             self.draw_dragon(c, cx, y, s, f, baby=False)
         else:
             self.draw_cat(c, cx, y, s, f)
+
+        if self.state == "study":
+            c.create_text(cx - 38 * s, y - 58 * s, text="📖",
+                          font=("Segoe UI Emoji", int(15 * s)))
+        elif self.state == "work" and self.job:
+            c.create_text(cx - 38 * s, y - 58 * s, text=self.job[1],
+                          font=("Segoe UI Emoji", int(15 * s)))
+            fr = max(0.0, min(1.0, 1 - self.timer / float(self.job[5])))
+            c.create_rectangle(cx - 26, y - 88, cx + 26, y - 82,
+                               fill="#FFFFFF", outline="#AAAAAA")
+            c.create_rectangle(cx - 26, y - 88, cx - 26 + int(52 * fr),
+                               y - 82, fill="#FFC94A", outline="")
 
         if self.state == "play" and self.ball:
             b = self.ball
@@ -1180,6 +1415,10 @@ class Pet:
                 r = (45 - a) * 6
                 c.create_oval(cx - r, cy - r - 30, cx + r, cy + r - 30,
                               outline="#FFE066", width=3)
+            elif life["type"] == "coin":
+                c.create_text(cx + e["x"] + math.sin(a * 0.4) * 6,
+                              cy + e["y"] - (40 - a),
+                              text="🪙", font=("Segoe UI Emoji", 15))
             elif life["type"] == "dust":
                 r = 2 + (12 - a) * 0.4
                 c.create_oval(cx + e["x"] - r, cy + e["y"] - r * 0.6,
