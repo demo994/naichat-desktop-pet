@@ -150,6 +150,7 @@ class Pet:
         self.bienao = False
         self.last_act = 0
         self.but = None
+        self._last_line = {}
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -228,6 +229,101 @@ class Pet:
         self.say_text = text
         self.say_until = self.t + dur
 
+    # ---------- 台词系统：每种情境一个专属语料池 ----------
+    LINES = {
+        # 被摸 / 亲昵
+        "pat_cat": ("喵～好舒服呀", "呼噜呼噜…", "蹭蹭你的手", "再摸一会会儿也行哦"),
+        "pat_dragon": ("嗷呜～", "嘿嘿，痒痒的", "别停呀，继续摸", "尾巴都翘起来了"),
+        "pat_happy": ("被撸得好开心", "就是这里，多来点", "舒服到想打呼噜", "眼睛眯成一条缝啦"),
+        "pat_love": ("最喜欢你啦！", "最最最喜欢清江鱼了！", "心都化啦～", "想一直黏着你"),
+        # 被打扰
+        "wake_up": ("哎呀，被吵醒了", "嗯…干嘛把我叫醒", "睡得正香呢…"),
+        "poke_angry": ("别戳了！生气啦！", "戳戳戳，戳不停是吧！", "再戳我可要咬人了！"),
+        "shake": ("别晃我！要吐了！", "停下停下，头都晕了！", "我又不是拨浪鼓…"),
+        "dizzy_land": ("头好晕…转圈圈", "被晃成浆糊了…", "放我下来…呕"),
+        # 菜单指令的回应（日常口吻）
+        "remind_on": ("好嘞，到时候我会提醒你喝水", "知道啦，我会盯着你喝水的"),
+        "remind_off": ("好吧，那就不提醒啦", "收到，这次听你的"),
+        "pull_off": ("好嘛，那我乖乖不拽鼠标", "知道啦，忍住不去咬鼠标"),
+        "pull_on": ("嘿嘿，准备好咬鼠标啦", "那我可就不客气了哦"),
+        "need_awake": ("先把我叫醒啦", "睡着了什么都做不了…", "Zzz…要先醒来才能办这事"),
+        "laser_on": ("红点逗猫棒！点一下桌面试试", "看到红点我就控制不住自己！", "点一下桌面，把红点放出来！"),
+        "laser_off": ("不玩红点了", "红点收起来啦，有点舍不得", "好吧，红点下次再见"),
+        # 追鼠标 / 红点
+        "lock_target": ("锁定目标！", "蹲下，扭扭，起跳！", "蓄力中…扑！"),
+        "chase_start": ("盯上你的鼠标了！", "你的鼠标看起来好好吃", "目标：鼠标！"),
+        "chase_start_laser": ("盯上红点了！", "红点跑不掉的！", "眼睛锁定红点"),
+        "bite": ("啊呜！咬住！", "吃我一口！", "哈！抓到啦"),
+        "grab": ("抓住啦！", "双手拿下！", "这下跑不掉了嘿嘿"),
+        "drag_start": ("把你鼠标拖走！", "跟我走吧你～", "搬家搬家，挪挪鼠标"),
+        "drag_ok": ("拖好啦，下次别乱动鼠标～", "放这里比较好看", "搬完了，风景不错"),
+        "drag_fail": ("拖不动…你力气太大", "纹丝不动…可恶", "怎么这么沉！"),
+        "chase_fail": ("没追上，好累", "追累了，休息一下", "今天状态不好，下次一定"),
+        "laser_dot": ("红点！！", "红点出现了！！", "在那在那！红点！"),
+        "laser_catch": ("拍到红点啦！", "扑到了！红点被我按住了！", "红点输给了本猫，嘿嘿"),
+        # 玩耍 / 小游戏
+        "ball_see": ("毛线球！！", "是毛线球！！眼睛发光", "球球！我的最爱！"),
+        "ball_hit": ("拍！毛线球！", "左一拍右一拍！", "球球别跑！"),
+        "ball_end": ("玩毛线球好累好开心", "球都累了，我也是", "下次再大战三百回合"),
+        "sleep_deaf": ("Zzz…叫不应，在装睡", "呼…呼…（假装没听见）", "Zzz…（耳朵动了动，身体没动）"),
+        "rps_tie": ("平局！都出{op}，默契～", "咦，出一样的！", "心有灵犀呀，都是{op}"),
+        "rps_win": ("我出{op}，我赢啦！哈哈", "赢啦！{op}万岁！", "猜拳之王正是在下！"),
+        "rps_lose": ("你赢了…我再练练！", "不服不服，再来一局！", "这次是让你赢的…才怪"),
+        "come_go": ("来啦来啦！", "来啦～找我有事吗", "这就来这就来"),
+        "come_arrive": ("到啦！要我干嘛～", "到！有什么吩咐", "我到了，说吧说吧"),
+        "come_fail": ("追不上你，哼", "你走太快了啦", "腿短，追丢了…"),
+        "flip_no": ("睡着翻不动…", "睡着翻会闪到腰的", "叫醒我再翻嘛"),
+        "flip_go": ("看我的！", "表演一个！", "看好咯～"),
+        "flip_done": ("怎么样，厉害吧！", "完美落地！", "帅吧？快夸我两句"),
+        # 商店 / 吃喝
+        "no_money": ("金币不够…去打工赚点吧", "钱包空空…等我打份工先", "买不起…我去搬砖赚钱！"),
+        "eat": ("{name}！好好吃！", "呜哇，是{name}！", "{name}一口闷！", "吃到{name}就是幸福猫"),
+        "drink": ("咕嘟咕嘟…{name}真解渴", "哈～好喝，{name}！", "{name}下肚，浑身清爽！"),
+        # 学习 / 打工
+        "lvup": ("{stat}升到 Lv.{new}！解锁更多工作！", "{stat}升级啦！离好工作更近了", "{stat} Lv.{new}！我变强了"),
+        "stat_use": ("用了{name}，{stat}见长", "{name}果然有用，{stat}涨啦", "感觉{stat}提升了一点"),
+        "sleep_busy": ("Zzz…睡着干不了活", "睡着呢…梦里也在搬砖", "想让我干活得先叫醒我"),
+        "busy": ("手上这事还没做完！", "等一下嘛，先忙完这个", "马上就好，别急"),
+        "weak": ("饿渴得没力气…先喂点吃的", "肚子咕咕叫了…来点吃的嘛", "又饿又渴，使不上劲…"),
+        "study_start": ("开始修炼{stat}！", "认真读书，{stat}冲冲冲", "今天也要好好学习"),
+        "study_mid": ("认真中…", "知识就是清江鱼！", "看懂了，大概…", "学霸猫养成中"),
+        "study_done": ("学到了学到了！{study} +{gain:.1f}", "合上书，{study}涨啦 +{gain:.1f}", "{study} +{gain:.1f}（Lv.{new}）"),
+        "job_locked": ("还没解锁…先去练{stat}！", "{stat}够格才能干这个呀", "{stat}还不够，报不了名"),
+        "job_start": ("上班去：{job}！", "打工人，打工猫！", "为了罐罐，出发"),
+        "job_mid": ("搬砖中…", "努力赚钱！", "认真打工，拒绝摸鱼", "带薪喘气中…"),
+        "job_done": ("上班赚到了 {pay} 金币！🪙", "发工资啦！{pay} 金币！", "{pay} 金币到手，晚上加个餐"),
+        # 生理 / 状态
+        "hungry": ("好饿…商店买条清江鱼吧", "肚子空空的…有鱼吗", "再不吃我就要饿扁了"),
+        "thirsty": ("好渴…想喝快乐水！", "嘴巴干干，想找水水", "有水吗？快乐水最好"),
+        "water_remind": ("主人，喝口水休息一下吧！", "盯了你这么久，该喝水啦", "工作这么久，喝口水嘛"),
+        "early_sleepy": ("好困…先睡了", "眼皮打架了…晚安", "清晨的猫只想睡觉"),
+        "evo_soon": ("感觉要进化了！", "身体里有股暖流…", "要突破了要突破了！"),
+        "evo_done": ("进化成{name}！", "睁开眼睛，世界都不一样了", "全新形态——{name}！"),
+        # 自娱自乐
+        "tail": ("追尾巴！嘿嘿", "今天非要抓住这条尾巴不可", "尾巴别跑！"),
+        "tail_end": ("追尾巴真好玩", "尾巴居然挑衅我", "抓到尾巴了…才怪"),
+        "butterfly": ("哪来的蝴蝶！？", "有蝴蝶！我要扑！", "它居然在我头顶上飞！"),
+        "butterfly_end": ("蝴蝶飞走啦～下次再玩", "飞走了…算你跑得快", "下次我一定扑得到"),
+        "sing": ("清清嗓子～", "开演唱会啦！", "今晚，只唱一首"),
+        "sing_end": ("唱完啦，感觉自己帅帅的", "今天嗓子状态不错", "可惜没有观众，唉"),
+        "roll": ("我自己打个滚", "地上凉凉的，滚一滚", "先热个身，打个滚"),
+        "roll_end": ("打滚真开心！", "滚完一身轻", "我就是滚圈小猫"),
+        "mirror": ("镜子里的猫好帅", "这也太好看了吧（指镜子）", "跟镜子里的猫聊两句"),
+        "mirror_end": ("镜子里的我最可爱", "他怎么跟我长得一模一样", "和镜子里的自己握手言和"),
+        "solo_pounce": ("扑！", "差一点…没扑着", "你别跑呀"),
+        "solo_dizzy": ("转得好晕…", "有点晕，扶我一下", "世界在转圈圈…"),
+    }
+
+    def say_line(self, key, wait=180, **fmt):
+        pool = self.LINES[key]
+        last = self._last_line.get(key)
+        picks = [p for p in pool if p != last] if len(pool) > 1 else list(pool)
+        line = random.choice(picks) if len(picks) > 1 else picks[0]
+        self._last_line[key] = line
+        if fmt:
+            line = line.format(**fmt)
+        self.say(line, wait)
+
     def set_expr(self, e, dur=150):
         self.expr = e
         self.expr_until = self.t + dur
@@ -237,7 +333,7 @@ class Pet:
         self.set_expr("happy")
         self.fx.append({"type": "love", "x": random.randint(-16, 16),
                         "y": -50, "life": 30})
-        self.say("喵～好舒服" if self.stage == 2 else "嗷呜～")
+        self.say_line("pat_cat" if self.stage == 2 else "pat_dragon")
 
     def touch(self):
         self.last_act = self.t
@@ -246,7 +342,7 @@ class Pet:
         self.touch()
         if self.state == "sleep":
             self.state = "rest"
-            self.say("被吵醒啦")
+            self.say_line("wake_up")
             return
         self.pokes = [x for x in self.pokes if self.t - x < 120]
         self.pokes.append(self.t)
@@ -254,7 +350,7 @@ class Pet:
             self.pokes = []
             self.happy = max(0.0, self.happy - 3)
             self.set_expr("angry", 260)
-            self.say("别戳了！生气啦！")
+            self.say_line("poke_angry")
             if self.follow_on and not self.bienao:
                 self.state = "chase"
                 self.timer = 200
@@ -274,7 +370,7 @@ class Pet:
                 self.dizzy_pending = True
                 self.happy = max(0.0, self.happy - 4)
                 self.set_expr("angry", 120)
-                self.say("别晃我！要吐了！")
+                self.say_line("shake")
         self.x, self.y = nx, ny
         self.place_window()
 
@@ -315,15 +411,15 @@ class Pet:
         self.happy = min(100.0, self.happy + 3)
         if self.pet_count >= 3:
             self.set_expr("love", 240)
-            self.say("最喜欢你啦！")
+            self.say_line("pat_love")
         else:
             self.set_expr("happy")
-            self.say("被撸得好开心")
+            self.say_line("pat_happy")
 
     def toggle_remind(self):
         self.remind_on = not self.remind_on
         self.remind_next = time.time() + 3600
-        self.say("会提醒你喝水" if self.remind_on else "好吧不提醒了")
+        self.say_line("remind_on" if self.remind_on else "remind_off")
 
     def status_lines(self):
         names = {0: "奶龙宝宝", 1: "少年奶龙", 2: "奶猫"}
@@ -432,7 +528,7 @@ class Pet:
 
     def toggle_pull(self):
         self.pull_on = not self.pull_on
-        self.say("会乖乖不拽鼠标" if not self.pull_on else "准备好咬鼠标啦")
+        self.say_line("pull_off" if not self.pull_on else "pull_on")
 
     def toggle_follow(self):
         self.follow_on = not self.follow_on
@@ -460,14 +556,14 @@ class Pet:
     # ---------- laser teaser ----------
     def toggle_laser(self):
         if self.state == "sleep":
-            self.say("先把我叫醒啦")
+            self.say_line("need_awake")
             return
         self.laser_on = not self.laser_on
         if self.laser_on:
-            self.say("红点逗猫棒！点一下桌面试试", 260)
+            self.say_line("laser_on", 260)
         else:
             self.kill_laser()
-            self.say("不玩红点了")
+            self.say_line("laser_off")
 
     def ensure_laser_win(self):
         if self.laser_win is not None:
@@ -500,7 +596,7 @@ class Pet:
         if self.state in ("rest", "wander", "groom", "stretch", "look"):
             self.state = "wiggle"
             self.timer = 8
-            self.say("红点！！", 90)
+            self.say_line("laser_dot", 90)
 
     def kill_laser(self):
         self.laser = None
@@ -536,26 +632,26 @@ class Pet:
     def buy(self, item):
         name, icon, cost, kind, val, hp, stat = item
         if self.money < cost:
-            self.say("金币不够…去打工赚点吧", 220)
+            self.say_line("no_money", 220)
             self.set_expr("sad", 200)
             return False
         self.money -= cost
         if kind == "full":
             self.hunger = max(0.0, self.hunger - val)
-            self.say(f"{name}！好好吃！")
+            self.say_line("eat", name=name)
         elif kind == "water":
             self.thirst = max(0.0, self.thirst - val)
-            self.say(f"咕嘟咕嘟…{name}真解渴")
+            self.say_line("drink", name=name)
         else:
             old = int(self.stats[stat])
             self.stats[stat] += val
             new = int(self.stats[stat])
             if new > old:
-                self.say(f"{stat}升到 Lv.{new}！解锁更多工作！", 260)
+                self.say_line("lvup", 260, stat=stat, new=new)
                 self.fx.append({"type": "flash", "x": 0, "y": -20,
                                 "life": 45})
             else:
-                self.say(f"用了{name}，{stat}见长")
+                self.say_line("stat_use", name=name, stat=stat)
         self.happy = min(100.0, self.happy + hp)
         self.progress += 0.1
         self.fx.append({"type": "food", "x": 0, "y": -50, "life": 40})
@@ -610,13 +706,13 @@ class Pet:
     # ---------- study & work ----------
     def _can_act(self):
         if self.state == "sleep":
-            self.say("Zzz…睡着干不了活")
+            self.say_line("sleep_busy")
             return False
         if self.state in ("work", "study"):
-            self.say("手上这事还没做完！")
+            self.say_line("busy")
             return False
         if self.hunger > 80 or self.thirst > 80:
-            self.say("饿渴得没力气…先喂点吃的")
+            self.say_line("weak")
             self.set_expr("sad", 200)
             return False
         return True
@@ -627,13 +723,12 @@ class Pet:
         self.state = "study"
         self.study = stat
         self.timer = 270
-        self.say(f"开始修炼{stat}！")
+        self.say_line("study_start", stat=stat)
 
     def study_tick(self):
         self.timer -= 1
         if self.timer % 60 == 30:
-            self.say(random.choice(("认真中…", "知识就是清江鱼！",
-                                    "学到了学到了")), 80)
+            self.say_line("study_mid", 80)
         if self.timer <= 0:
             gain = random.uniform(0.7, 1.0)
             old = int(self.stats[self.study])
@@ -643,12 +738,13 @@ class Pet:
             self.thirst = min(100.0, self.thirst + 5)
             self.progress += 0.2
             if new > old:
-                self.say(f"{self.study}升到 Lv.{new}！解锁更多工作！", 260)
+                self.say_line("lvup", 260, stat=self.study, new=new)
                 self.fx.append({"type": "flash", "x": 0, "y": -20,
                                 "life": 45})
                 self.set_expr("surprised", 160)
             else:
-                self.say(f"{self.study} +{gain:.1f}（Lv.{new}）", 220)
+                self.say_line("study_done", 220, study=self.study,
+                              gain=gain, new=new)
                 self.set_expr("happy", 160)
             self.study = None
             self.state = "rest"
@@ -658,19 +754,18 @@ class Pet:
         if not self._can_act():
             return
         if job[2] and int(self.stats[job[2]]) < job[3]:
-            self.say("还没解锁…先去练%s！" % job[2], 220)
+            self.say_line("job_locked", 220, stat=job[2])
             self.set_expr("sad", 180)
             return
         self.state = "work"
         self.job = job
         self.timer = job[5]
-        self.say(f"上班去：{job[0]}！")
+        self.say_line("job_start", job=job[0])
 
     def work_tick(self):
         self.timer -= 1
         if self.timer % 90 == 45:
-            self.say(random.choice(("搬砖中…", "努力赚钱！",
-                                    "为了清江鱼！")), 80)
+            self.say_line("job_mid", 80)
         if self.timer <= 0:
             name, icon, stat, req, pay, dur = self.job
             if stat:
@@ -684,7 +779,7 @@ class Pet:
             self.state = "rest"
             self.timer = 80
             self.set_expr("happy", 180)
-            self.say(f"上班赚到了 {pay} 金币！🪙", 240)
+            self.say_line("job_done", 240, pay=pay)
             self.fx.append({"type": "coin", "x": 0, "y": -60, "life": 40})
 
     def start_play(self):
@@ -695,12 +790,12 @@ class Pet:
         bx = self.x + random.choice((-1, 1)) * random.randint(60, 100)
         self.ball = {"x": bx, "y": self.home_y - 60,
                      "vx": random.uniform(-5, 5), "vy": -4}
-        self.say("毛线球！！")
+        self.say_line("ball_see")
 
     # ---------- mini games ----------
     def play_rps(self):
         if self.state == "sleep":
-            self.say("Zzz…叫不应，在装睡")
+            self.say_line("sleep_deaf")
             return
         d = tk.Toplevel(self.root)
         d.title("和我猜拳")
@@ -715,16 +810,16 @@ class Pet:
             d.destroy()
             bot = random.randrange(3)
             if me == bot:
-                self.say("平局！都出%s，默契～" % ops[me], 240)
+                self.say_line("rps_tie", 240, op=ops[me])
                 self.happy = min(100.0, self.happy + 1)
                 self.set_expr("happy", 180)
             elif (me - bot) % 3 == 2:
-                self.say("我出%s，我赢啦！哈哈" % ops[bot], 240)
+                self.say_line("rps_win", 240, op=ops[bot])
                 self.happy = min(100.0, self.happy + 4)
                 self.progress += 0.2
                 self.set_expr("smug", 240)
             else:
-                self.say("你赢了…我再练练！", 240)
+                self.say_line("rps_lose", 240)
                 self.happy = max(0.0, self.happy - 1)
                 self.set_expr("sad", 240)
 
@@ -737,34 +832,31 @@ class Pet:
 
     def call_here(self):
         if self.state == "sleep":
-            self.say("Zzz…叫不应，在装睡")
+            self.say_line("sleep_deaf")
             return
         self.state = "come"
         self.timer = 360
-        self.say("来啦来啦！")
+        self.say_line("come_go")
 
     def do_flip(self):
         if self.state == "sleep":
-            self.say("睡着翻不动…")
+            self.say_line("flip_no")
             return
         self.state = "flip"
         self.flip_t = 0
         self.flip_dir = self.facing
-        self.say("看我的！")
+        self.say_line("flip_go")
 
     # ---------- solo play (自娱自乐) ----------
-    SOLO = {"tail": ("追尾巴！嘿嘿", 130),
-            "butterfly": ("哪来的蝴蝶！？", 320),
-            "sing": ("清清嗓子～", 180),
-            "roll": ("我自己打个滚", 200),
-            "mirror": ("镜子里的猫好帅", 150)}
+    SOLO = {"tail": 130, "butterfly": 320, "sing": 180,
+            "roll": 200, "mirror": 150}
 
     def solo_start(self):
         act = random.choice(tuple(self.SOLO))
-        line, dur = self.SOLO[act]
+        dur = self.SOLO[act]
         self.state = act
         self.timer = dur
-        self.say(line, 160)
+        self.say_line(act, 160)
         if act == "butterfly":
             self.but = {"ph": 0.0, "bx": self.x, "by": self.home_y - 90}
         if act == "roll":
@@ -773,16 +865,16 @@ class Pet:
         if act == "mirror":
             self.set_expr("smug", dur)
 
-    def _solo_end(self, msg, hp, dizzy=0.0):
+    def _solo_end(self, key, hp, dizzy=0.0):
         self.state = "rest"
         self.timer = random.randint(40, 100)
         self.happy = min(100.0, self.happy + hp)
         self.progress += 0.05
         if dizzy and random.random() < dizzy:
             self.set_expr("dizzy", 200)
-            self.say("转得好晕…", 200)
+            self.say_line("solo_dizzy", 200)
         else:
-            self.say(msg, 180)
+            self.say_line(key + "_end", 180)
 
     def solo_tick(self):
         self.timer -= 1
@@ -793,17 +885,17 @@ class Pet:
                 self.clamp_pos()
                 self.moving = True
             if self.timer <= 0:
-                self._solo_end("追尾巴真好玩", 1.5, dizzy=0.3)
+                self._solo_end("tail", 1.5, dizzy=0.3)
         elif self.state == "sing":
             if self.timer % 14 == 0:
                 self.fx.append({"type": "note",
                                 "x": random.randint(12, 34),
                                 "y": -70, "life": 50})
             if self.timer <= 0:
-                self._solo_end("唱完啦，感觉自己帅帅的", 1.0)
+                self._solo_end("sing", 1.0)
         elif self.state == "mirror":
             if self.timer <= 0:
-                self._solo_end("镜子里的我最可爱", 1.0)
+                self._solo_end("mirror", 1.0)
         elif self.state == "roll":
             self.flip_t += 1
             self.y = self.home_y - int(abs(math.sin(self.flip_t * 0.22)) * 38)
@@ -819,7 +911,7 @@ class Pet:
                                 "y": -4, "life": 12})
             if self.timer <= 0:
                 self.y = self.home_y
-                self._solo_end("打滚真开心！", 1.5)
+                self._solo_end("roll", 1.5)
         elif self.state == "butterfly":
             b = self.but
             b["ph"] += 0.12
@@ -830,12 +922,12 @@ class Pet:
             self.moving = self.nudge(4.6)
             d = math.hypot(b["bx"] - self.x, b["by"] - (self.y - 40))
             if d < 55 and self.timer % 30 == 0:
-                self.say("扑！")
+                self.say_line("solo_pounce")
                 self.fx.append({"type": "star", "x": 0, "y": -90,
                                 "life": 20})
             if self.timer <= 0:
                 self.but = None
-                self._solo_end("蝴蝶飞走啦～下次再玩", 2.0)
+                self._solo_end("butterfly", 2.0)
 
     # ---------- movement ----------
     def place_window(self):
@@ -876,7 +968,7 @@ class Pet:
             self.happy = max(0.0, self.happy - 0.04)
         if self.remind_on and time.time() > self.remind_next:
             self.remind_next += 3600
-            self.say("主人，喝口水休息一下吧！", 260)
+            self.say_line("water_remind", 260)
             self.set_expr("surprised", 160)
         if self.laser_on:
             self.laser_tick()
@@ -934,7 +1026,7 @@ class Pet:
                 if self.dizzy_pending:
                     self.dizzy_pending = False
                     self.set_expr("dizzy", 220)
-                    self.say("头好晕…转圈圈", 220)
+                    self.say_line("dizzy_land", 220)
                     self.fx.append({"type": "star", "x": 0, "y": -90,
                                     "life": 60})
                 else:
@@ -947,7 +1039,7 @@ class Pet:
         elif self.state == "pick":
             if time.localtime().tm_hour < 7 and random.random() < 0.6:
                 self.set_expr("sleepy", 600)
-                self.say("好困…先睡了", 240)
+                self.say_line("early_sleepy", 240)
                 self.state = "sleep"
             else:
                 roll = random.random()
@@ -958,7 +1050,7 @@ class Pet:
                         not self.laser_on and not self.bienao:
                     self.state = "wiggle"
                     self.timer = 22
-                    self.say("锁定目标！", 90)
+                    self.say_line("lock_target", 90)
                 elif roll < 0.75:
                     self.target = (random.randint(self.L + 60, self.R - 60),
                                    self.home_y)
@@ -1002,7 +1094,7 @@ class Pet:
                     (d > 600 and not self.laser_target):
                 self.state = "rest"
                 self.timer = random.randint(30, 90)
-                self.say("没追上，好累")
+                self.say_line("chase_fail")
         elif self.state == "pounce":
             self.timer -= 1
             if self.timer <= 0:
@@ -1014,12 +1106,12 @@ class Pet:
                     self.set_expr("happy", 160)
                     self.fx.append({"type": "star", "x": 0, "y": -90,
                                     "life": 40})
-                    self.say("拍到红点啦！")
+                    self.say_line("laser_catch")
                     self.kill_laser()
                 else:
                     self.state = "bite"
                     self.timer = 30
-                    self.say("啊呜！咬住！")
+                    self.say_line("bite")
         elif self.state == "bite":
             self.timer -= 1
             self.hold_cursor(self.x + self.facing * 10, self.y - 30, 42)
@@ -1032,7 +1124,7 @@ class Pet:
             if self.timer <= 0:
                 self.state = "grab"
                 self.timer = 16
-                self.say("抓住啦！")
+                self.say_line("grab")
         elif self.state == "grab":
             self.timer -= 1
             self.hold_cursor(self.x + self.facing * 20, self.y - 26, 30)
@@ -1066,7 +1158,7 @@ class Pet:
         self.timer = 150
         tx = self.x + random.choice((-1, 1)) * random.randint(140, 320)
         self.drag_to = (max(self.L + 60, min(self.R - 60, tx)), self.home_y)
-        self.say("把你鼠标拖走！")
+        self.say_line("drag_start")
 
     def drag_tick(self):
         self.timer -= 1
@@ -1075,7 +1167,7 @@ class Pet:
             self.state = "rest"
             self.timer = random.randint(60, 140)
             self.set_expr("smug", 220)
-            self.say("拖好啦，下次别乱动鼠标～")
+            self.say_line("drag_ok")
             self.evo_check()
             return
         self.facing = 1 if dx > 0 else -1
@@ -1093,7 +1185,7 @@ class Pet:
                 self.state = "rest"
                 self.timer = 60
                 self.set_expr("angry", 200)
-                self.say("拖不动…你力气太大")
+                self.say_line("drag_fail")
                 return
         else:
             self.slip = 0
@@ -1133,14 +1225,14 @@ class Pet:
             b["vy"] = -random.uniform(4, 8)
             self.swipe = 8
             if random.random() < 0.25:
-                self.say("拍！毛线球！")
+                self.say_line("ball_hit")
         if self.swipe:
             self.swipe -= 1
         if self.timer <= 0:
             self.state = "rest"
             self.timer = 80
             self.ball = None
-            self.say("玩毛线球好累好开心")
+            self.say_line("ball_end")
 
     def come_tick(self):
         self.timer -= 1
@@ -1152,11 +1244,11 @@ class Pet:
             self.timer = 30
             self.happy = min(100.0, self.happy + 1)
             self.set_expr("happy", 150)
-            self.say("到啦！要我干嘛～")
+            self.say_line("come_arrive")
         elif self.timer <= 0:
             self.state = "rest"
             self.timer = 60
-            self.say("追不上你，哼")
+            self.say_line("come_fail")
 
     def flip_tick(self):
         self.flip_t += 1
@@ -1168,7 +1260,7 @@ class Pet:
             self.happy = min(100.0, self.happy + 2)
             self.progress += 0.1
             self.set_expr("smug", 220)
-            self.say("怎么样，厉害吧！")
+            self.say_line("flip_done")
             self.fx.append({"type": "star", "x": 0, "y": -90, "life": 45})
         else:
             self.y = self.home_y - int(math.sin(ph * math.pi) * 80)
@@ -1188,9 +1280,9 @@ class Pet:
         self.state = "chase"
         self.timer = random.randint(160, 260)
         if self.laser_on and self.laser:
-            self.say("盯上红点了！")
+            self.say_line("chase_start_laser")
         else:
-            self.say("盯上你的鼠标了！")
+            self.say_line("chase_start")
 
     def evo_check(self):
         pass
@@ -1203,8 +1295,8 @@ class Pet:
         if (need_time and need_feed) or self.progress >= self.evo_needs[self.stage] * 2:
             self.stage += 1
             self.fx.append({"type": "flash", "x": 0, "y": -20, "life": 45})
-            names = ["", "你进化成了少年奶龙！", "你进化成了奶猫！！"]
-            self.say(names[self.stage], 300)
+            names = ["", "少年奶龙", "奶猫"]
+            self.say_line("evo_done", 300, name=names[self.stage])
             self.save()
 
     def update_mood(self):
@@ -1212,13 +1304,13 @@ class Pet:
                           "work", "study"):
             return
         if self.hunger > 75 and self.t > self.say_until:
-            self.say("好饿…商店买条清江鱼吧", 240)
+            self.say_line("hungry", 240)
         elif self.thirst > 75 and self.t > self.say_until:
-            self.say("好渴…想喝快乐水！", 240)
+            self.say_line("thirsty", 240)
         elif self.total_secs > 100 and self.stage == 0 and \
                 (self.progress >= self.evo_needs[0] or
                  self.total_secs >= self.evo_times[0]):
-            self.say("感觉要进化了！", 240)
+            self.say_line("evo_soon", 240)
             self.evo_try()
 
     # ---------- drawing ----------
