@@ -147,6 +147,7 @@ class Pet:
         self.win_last = -999
         self.lbtn = False
         self.lbtn_last = -999
+        self.bienao = False
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -248,7 +249,7 @@ class Pet:
             self.happy = max(0.0, self.happy - 3)
             self.set_expr("angry", 260)
             self.say("别戳了！生气啦！")
-            if self.follow_on:
+            if self.follow_on and not self.bienao:
                 self.state = "chase"
                 self.timer = 200
                 return
@@ -411,6 +412,8 @@ class Pet:
                       command=self.toggle_follow)
         m.add_command(label=("干扰拉扯：开" if self.pull_on else "干扰拉扯：关"),
                       command=self.toggle_pull)
+        m.add_command(label=("别闹中：点我恢复" if self.bienao else "别闹（不追鼠标）"),
+                      command=self.toggle_bienao)
         m.add_command(label=("唤醒" if self.state == "sleep" else "睡觉"),
                       command=self.toggle_sleep)
         m.add_command(label="放大一点", command=lambda: self.set_scale(1.2))
@@ -427,6 +430,18 @@ class Pet:
         self.follow_on = not self.follow_on
         if not self.follow_on and self.state == "chase":
             self.state = "rest"
+
+    def toggle_bienao(self):
+        self.bienao = not self.bienao
+        if self.bienao:
+            self.say("好吧，清江鱼不和我玩，那我自己玩", 300)
+            self.set_expr("sad", 240)
+            if self.state in ("wiggle", "chase"):
+                self.state = "rest"
+                self.timer = random.randint(40, 90)
+        else:
+            self.say("太好了，清江鱼愿意和我玩了", 300)
+            self.set_expr("love", 240)
 
     def toggle_sleep(self):
         self.state = "rest" if self.state == "sleep" else "sleep"
@@ -840,7 +855,8 @@ class Pet:
                 self.state = "sleep"
             else:
                 roll = random.random()
-                if self.follow_on and roll < 0.55 and not self.laser_on:
+                if self.follow_on and roll < 0.55 and \
+                        not self.laser_on and not self.bienao:
                     self.state = "wiggle"
                     self.timer = 22
                     self.say("锁定目标！", 90)
@@ -1179,8 +1195,8 @@ class Pet:
     def draw_bubble(self, c, cx):
         if self.t >= self.say_until or not self.say_text:
             return
-        txt = self.say_text if len(self.say_text) <= 12 \
-            else self.say_text[:12]
+        txt = self.say_text if len(self.say_text) <= 16 \
+            else self.say_text[:16]
         wpx = 13 * len(txt) + 20
         x1 = max(4, cx - wpx // 2)
         x2 = min(W - 4, x1 + wpx)
