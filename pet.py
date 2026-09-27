@@ -155,10 +155,13 @@ class Pet:
         self.jump_t = 0
         self._mci = ctypes.windll.winmm.mciSendStringW
         self.song = None
+        self.song_file = None
         self.song_len = 0
         self.lyric = []
         self.lyric_i = 0
         self.sing_pose = "mic"
+        self.ctrl_win = None
+        self._btn_pause = None
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -722,12 +725,15 @@ class Pet:
         self.mci("setaudio petmus volume to 600")
         stem = os.path.splitext(fname)[0]
         self.song = stem.replace(" - APLMate.com", "")
+        self.song_file = fname
         self.lyric = self.load_lrc(stem)
         self.lyric_i = 0
         self.sing_pose = random.choice(("mic", "both", "lean", "hop"))
         self.state = "music"
         self.set_expr(random.choice(("happy", "star", "love")), 240)
         self.say_line("music_start", 160)
+        self.ensure_ctrl_win()
+        self.place_ctrl()
         self.fx.append({"type": "note", "x": random.randint(-20, 20),
                         "y": -80, "life": 50})
 
@@ -737,50 +743,121 @@ class Pet:
         self.mci("stop petmus")
         self.mci("close petmus")
         self.song = None
+        self.song_file = None
         self.lyric = []
+        self.hide_ctrl_win()
         if self.state == "music":
             self.state = "rest"
             self.timer = random.randint(40, 90)
         if not quiet:
             self.say_line("music_stop", 160)
 
-    def music_tick(self):
-        if self.song is None:
-            self.state = "rest"
+    def ensure_ctrl_win(self):
+        if self.ctrl_win is not None:
+            try:
+                if self.ctrl_win.winfo_exists():
+                    self.ctrl_win.deiconify()
+                    self._btn_pause.config(text="⏸")
+                    return
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg="#F2E3C6")
+        bs = dict(relief="flat", bg="#FFE9B8", activebackground="#FFD98A",
+                  font=("Microsoft YaHei", 10), width=3, bd=0)
+        self._btn_pause = tk.Button(w, text="⏸", command=self.toggle_pause,
+                                    **bs)
+        self._btn_pause.pack(side="left", padx=3, pady=3)
+        tk.Button(w, text="⏭", command=self.next_song, **bs) \
+            .pack(side="left", padx=3, pady=3)
+        tk.Button(w, text="⏹", command=self.stop_music, **bs) \
+            .pack(side="left", padx=3, pady=3)
+        self.ctrl_win = w
+
+    def hide_ctrl_win(self):
+        if self.ctrl_win is not None:
+            try:
+                self.ctrl_win.withdraw()
+            except tk.TclError:
+                pass
+
+    def place_ctrl(self):
+        try:
+            if self.ctrl_win is None or not self.ctrl_win.winfo_viewable():
+                return
+        except tk.TclError:
             return
-        if self.t % 16 == 0:
-            mode = self.mci("status petmus mode")
-            if mode != "playing":
-                self.mci("close petmus")
-                self.song = None
-                self.lyric = []
+        px = int(max(self.L + 60, min(self.R - 60, self.x)) - 62)
+        self.ctrl_win.geometry("+%d+%d" % (px, int(self.home_y) - 4))
+
+    def toggle_pause(self):
+        if self.song is None:
+            return
+        mode = self.mci("status petmus mode")
+        if mode == "playing":
+            self.mci("pause petmus")
+            self._btn_pause.config(text="▶")
+        elif mode == "paused":
+            self.mci("play petmus")
+            self._btn_pause.config(text="⏸")
+
+    def next_song(self):
+        songs = self.list_songs()
+        if not songs:
+            self.say_line("music_none", 200)
+            return
+        try:
+            i = songs.index(self.song_file)
+        except (ValueError, TypeError):
+            i = -1
+        self.start_music(songs[(i + 1) % len(songs)])
+
+    def music_tick(self):
+        if self.song is None or self.t % 16:
+            return
+        mode = self.mci("status petmus mode")
+        if mode == "paused":
+            return
+        if mode != "playing":
+            self.mci("close petmus")
+            self.song = None
+            self.song_file = None
+            self.lyric = []
+            self.hide_ctrl_win()
+            if self.state == "music":
                 self.state = "rest"
                 self.timer = random.randint(40, 90)
-                self.happy = min(100.0, self.happy + 3)
-                self.progress += 0.05
-                self.say_line("music_end", 220)
-                self.fx.append({"type": "star", "x": 0, "y": -90,
-                                "life": 40})
-                return
-            try:
-                pos = int(self.mci("status petmus position") or 0)
-            except ValueError:
-                pos = 0
-            if self.lyric:
-                while self.lyric_i < len(self.lyric) and \
-                        self.lyric[self.lyric_i][0] <= pos:
-                    self.say(self.lyric[self.lyric_i][1], 240)
-                    self.lyric_i += 1
-            elif self.t % 160 == 0:
-                self.say_line("sing_la", 240)
-        if self.t % 44 == 0:
-            self.fx.append({"type": "note",
-                            "x": random.randint(-26, 26),
-                            "y": -76, "life": 50})
-        if self.t % 300 == 0:
-            self.set_expr(random.choice(("happy", "star", "love")), 260)
-        if self.sing_pose == "hop" and self.t % 60 == 0:
-            self.jump_t = 16
+            self.happy = min(100.0, self.happy + 3)
+            self.progress += 0.05
+            self.say_line("music_end", 220)
+            self.fx.append({"type": "star", "x": 0, "y": -90,
+                            "life": 40})
+            return
+        try:
+            pos = int(self.mci("status petmus position") or 0)
+        except ValueError:
+            pos = 0
+        if self.lyric:
+            while self.lyric_i < len(self.lyric) and \
+                    self.lyric[self.lyric_i][0] <= pos:
+                self.say(self.lyric[self.lyric_i][1], 240)
+                self.lyric_i += 1
+        elif self.t % 160 == 0:
+            self.say_line("sing_la", 240)
+        if self.state in ("rest", "pick"):
+            self.state = "music"
+        if self.state == "music":
+            if self.t % 44 == 0:
+                self.fx.append({"type": "note",
+                                "x": random.randint(-26, 26),
+                                "y": -76, "life": 50})
+            if self.t % 300 == 0:
+                self.set_expr(random.choice(("happy", "star", "love")),
+                              260)
+            if self.sing_pose == "hop" and self.t % 60 == 0:
+                self.jump_t = 16
 
     # ---------- laser teaser ----------
     def toggle_laser(self):
@@ -1235,6 +1312,9 @@ class Pet:
             self.set_expr("surprised", 160)
         if self.laser_on:
             self.laser_tick()
+        self.music_tick()
+        if self.song and self.t % 6 == 0:
+            self.place_ctrl()
         win_down = bool(user32.GetAsyncKeyState(0x5B) & 0x8000) or \
             bool(user32.GetAsyncKeyState(0x5C) & 0x8000)
         if win_down and not self.win_down:
@@ -1296,8 +1376,6 @@ class Pet:
                                     "life": 60})
                 else:
                     self.shake = 0
-        elif self.state == "music":
-            self.music_tick()
         elif self.state == "rest":
             self.timer -= 1
             if self.timer <= 0:
@@ -1799,16 +1877,23 @@ class Pet:
     def draw_bubble(self, c, cx):
         if self.t >= self.say_until or not self.say_text:
             return
-        txt = self.say_text if len(self.say_text) <= 16 \
-            else self.say_text[:16]
-        wpx = 13 * len(txt) + 20
+        txt = self.say_text
+        lines = [txt] if len(txt) <= 16 else [txt[:16], txt[16:32]]
+        wpx = 13 * max(len(t) for t in lines) + 20
         x1 = max(4, cx - wpx // 2)
         x2 = min(W - 4, x1 + wpx)
         c.create_polygon(cx - 5, 34, cx + 5, 34, cx, 44,
                          fill="white", outline="")
-        c.create_oval(x1, 6, x2, 38, fill="white", outline="#CCCCCC")
-        c.create_text((x1 + x2) // 2, 22, text=txt, fill="#555555",
-                      font=("Microsoft YaHei", 9))
+        c.create_oval(x1, 6 if len(lines) == 1 else 0, x2, 40,
+                      fill="white", outline="#CCCCCC")
+        if len(lines) == 1:
+            c.create_text((x1 + x2) // 2, 22, text=lines[0],
+                          fill="#555555", font=("Microsoft YaHei", 9))
+        else:
+            c.create_text((x1 + x2) // 2, 12, text=lines[0],
+                          fill="#555555", font=("Microsoft YaHei", 9))
+            c.create_text((x1 + x2) // 2, 30, text=lines[1],
+                          fill="#555555", font=("Microsoft YaHei", 9))
 
     def look_dir(self):
         if self.state == "look":
