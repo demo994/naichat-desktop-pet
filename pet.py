@@ -83,6 +83,7 @@ class Pet:
         self.swipe = 0
         self.ball = None
         self.drag_to = (0, 0)
+        self.slip = 0
         self.grab_pt = None
         self.drag_dx = 0
         self.drag_dy = 0
@@ -344,10 +345,11 @@ class Pet:
                 self.say("啊呜！咬住！")
         elif self.state == "bite":
             self.timer -= 1
+            self.hold_cursor(self.x + self.facing * 10, self.y - 30, 42)
             if self.timer % 12 == 6:
                 mx, my = get_mouse()
-                set_mouse(mx + random.randint(-4, 4),
-                          my + random.randint(-4, 4))
+                set_mouse(mx + random.randint(-5, 5),
+                          my + random.randint(-5, 5))
                 self.fx.append({"type": "bite", "x": random.randint(-14, 14),
                                 "y": -34, "life": 14})
             if self.timer <= 0:
@@ -356,9 +358,10 @@ class Pet:
                 self.say("抓住啦！")
         elif self.state == "grab":
             self.timer -= 1
+            self.hold_cursor(self.x + self.facing * 20, self.y - 26, 30)
             if self.timer <= 0:
                 self.start_drag()
-        elif self.state == "drag":
+        elif self.state == "dragmouse":
             self.drag_tick()
 
         self.update_mood()
@@ -366,8 +369,13 @@ class Pet:
         self.draw()
         self.root.after(FPS_MS, self.tick)
 
+    def hold_cursor(self, hx, hy, radius, snap=0.6):
+        mx, my = get_mouse()
+        if math.hypot(hx - mx, hy - my) > radius:
+            set_mouse(mx + (hx - mx) * snap, my + (hy - my) * snap)
+
     def start_drag(self):
-        self.state = "drag"
+        self.state = "dragmouse"
         self.timer = 150
         tx = self.x + random.choice((-1, 1)) * random.randint(140, 320)
         self.drag_to = (max(self.L + 60, min(self.R - 60, tx)), self.home_y)
@@ -383,20 +391,26 @@ class Pet:
             self.evo_check()
             return
         self.facing = 1 if dx > 0 else -1
-        self.x += self.facing * 3.4
+        self.x += self.facing * 4.2
         self.y = min(self.y + 1.5, self.home_y)
         self.clamp_pos()
         self.moving = True
         mx, my = get_mouse()
         gx = self.x + self.facing * 26
         gy = self.y - 26
-        if math.hypot(gx - mx, gy - my) > 240:
-            self.state = "rest"
-            self.timer = 60
-            self.say("拖不动…你力气太大")
-            return
-        set_mouse(max(self.L, min(self.R, mx + (gx - mx) * 0.35)),
-                  max(self.T, min(self.B, my + (gy - my) * 0.35)))
+        d = math.hypot(gx - mx, gy - my)
+        if d > 340:
+            self.slip += 1
+            if self.slip > 30:
+                self.state = "rest"
+                self.timer = 60
+                self.say("拖不动…你力气太大")
+                return
+        else:
+            self.slip = 0
+        pull = min(0.8, 0.4 + d / 600)
+        set_mouse(max(self.L, min(self.R, mx + (gx - mx) * pull)),
+                  max(self.T, min(self.B, my + (gy - my) * pull)))
         if self.t % 14 == 0:
             self.fx.append({"type": "bite", "x": random.randint(-10, 10),
                             "y": -30, "life": 12})
@@ -463,7 +477,7 @@ class Pet:
             self.save()
 
     def update_mood(self):
-        if self.state in ("bite", "pounce", "grab", "drag", "play"):
+        if self.state in ("bite", "pounce", "grab", "dragmouse", "play"):
             return
         if self.hunger > 75 and self.t > self.say_until:
             self.say("好饿…想吃清江鱼", 240)
@@ -500,7 +514,7 @@ class Pet:
         elif self.state == "bite":
             self.hop = 2 if self.timer % 12 < 6 else 0
         self.grab_pt = None
-        if self.state in ("grab", "drag"):
+        if self.state in ("grab", "dragmouse"):
             mx, my = get_mouse()
             gx = max(12, min(W - 12, cx + (mx - self.x)))
             gy = max(50, min(H - 12, cy + (my - self.y)))
@@ -592,7 +606,7 @@ class Pet:
         for k in (-1, 1):
             ey = hy - 8 * s
             px = cx + k * 16 * s
-            if self.state == "drag":
+            if self.state == "dragmouse":
                 c.create_line(px - 5 * s, ey - 4 * s, px + 5 * s, ey + 4 * s,
                               width=2, fill="#5B4A12")
                 c.create_line(px - 5 * s, ey + 4 * s, px + 5 * s, ey - 4 * s,
@@ -690,7 +704,7 @@ class Pet:
         eyes_closed = self.state in ("sleep", "groom") or self.blink
         for k in (-1, 1):
             px, ey = cx + k * 14 * s, hy - 2 * s
-            if self.state == "drag":
+            if self.state == "dragmouse":
                 c.create_line(px - 5.5 * s, ey - 4.5 * s,
                               px + 5.5 * s, ey + 4.5 * s,
                               width=2, fill="#6B5B4A")
