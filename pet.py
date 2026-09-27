@@ -47,6 +47,8 @@ def single_instance():
 
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_LAYERED = 0x00080000
 
 
 class Pet:
@@ -98,6 +100,15 @@ class Pet:
         self.drag_dx = 0
         self.drag_dy = 0
         self.save_next = time.time() + 20
+        self.laser_on = False
+        self.laser = None
+        self.laser_win = None
+        self.laser_cv = None
+        self.laser_target = False
+        self.btn_down = False
+        self.pokes = []
+        self.flip_t = 0
+        self.flip_dir = 1
         self.evo_times = [600, 1800]
         self.evo_needs = [5, 12]
 
@@ -179,6 +190,17 @@ class Pet:
             self.state = "rest"
             self.say("被吵醒啦")
             return
+        self.pokes = [x for x in self.pokes if self.t - x < 120]
+        self.pokes.append(self.t)
+        if len(self.pokes) >= 5:
+            self.pokes = []
+            self.happy = max(0.0, self.happy - 3)
+            self.set_expr("angry", 260)
+            self.say("别戳了！生气啦！")
+            if self.follow_on:
+                self.state = "chase"
+                self.timer = 200
+                return
         self.drag_dx, self.drag_dy = e.x, e.y
         self.state = "drag"
 
@@ -197,6 +219,8 @@ class Pet:
         self.place_window()
 
     def on_release(self, e):
+        if self.state == "chase":
+            return
         if self.home_y - self.y > 150:
             self.dizzy_pending = True
         self.state = "fall"
@@ -252,6 +276,12 @@ class Pet:
         m.add_command(label="喂清江鱼", command=self.feed)
         m.add_command(label="摸摸头", command=self.pat)
         m.add_command(label="玩毛线球", command=self.start_play)
+        m.add_command(label=("激光逗猫棒：开" if self.laser_on
+                             else "激光逗猫棒"),
+                      command=self.toggle_laser)
+        m.add_command(label="猜拳", command=self.play_rps)
+        m.add_command(label="过来", command=self.call_here)
+        m.add_command(label="翻跟头", command=self.do_flip)
         m.add_command(label=("喝水提醒：开" if self.remind_on
                              else "喝水提醒：关"),
                       command=self.toggle_remind)
@@ -283,6 +313,78 @@ class Pet:
     def set_scale(self, k):
         self.scale = max(0.6, min(1.8, self.scale * k))
 
+    # ---------- laser teaser ----------
+    def toggle_laser(self):
+        if self.state == "sleep":
+            self.say("先把我叫醒啦")
+            return
+        self.laser_on = not self.laser_on
+        if self.laser_on:
+            self.say("红点逗猫棒！点一下桌面试试", 260)
+        else:
+            self.kill_laser()
+            self.say("不玩红点了")
+
+    def ensure_laser_win(self):
+        if self.laser_win is not None:
+            return
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)
+        w.attributes("-transparentcolor", COLORKEY)
+        w.attributes("-topmost", True)
+        cv = tk.Canvas(w, width=36, height=36, bg=COLORKEY,
+                       highlightthickness=0)
+        cv.pack()
+        cv.create_oval(13, 13, 23, 23, fill="#FF2A2A", outline="")
+        cv.create_oval(8, 8, 28, 28, outline="#FF7B6B")
+        cv.create_oval(4, 4, 32, 32, outline="#FFB3A6")
+        self.laser_win, self.laser_cv = w, cv
+        w.update_idletasks()
+        h = user32.GetParent(w.winfo_id()) or w.winfo_id()
+        user32.SetWindowLongW(h, GWL_EXSTYLE,
+                              user32.GetWindowLongW(h, GWL_EXSTYLE)
+                              | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
+                              | WS_EX_LAYERED)
+        user32.SetWindowPos(h, -1, 0, 0, 0, 0, 1 | 2 | 0x10)
+
+    def spawn_laser(self, x, y):
+        if self.state == "sleep":
+            return
+        self.ensure_laser_win()
+        self.laser = {"x": x, "y": y, "life": 300}
+        self.laser_win.deiconify()
+        if self.state in ("rest", "wander", "groom", "stretch", "look"):
+            self.state = "wiggle"
+            self.timer = 8
+            self.say("红点！！", 90)
+
+    def kill_laser(self):
+        self.laser = None
+        if self.laser_win is not None:
+            self.laser_win.withdraw()
+
+    def laser_tick(self):
+        down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+        if down and not self.btn_down:
+            mx, my = get_mouse()
+            in_pet = (self.x - W // 2 < mx < self.x + W // 2 and
+                      self.y - H + 80 < my < self.y + H - 80)
+            if not in_pet:
+                self.spawn_laser(mx, my)
+        self.btn_down = down
+        if self.laser:
+            self.laser["x"] += random.uniform(-2.5, 2.5)
+            self.laser["y"] += random.uniform(-2.5, 2.5)
+            self.laser["x"] = max(self.L + 20, min(self.R - 20,
+                                                    self.laser["x"]))
+            self.laser["y"] = max(self.T + 20, min(self.B - 20,
+                                                    self.laser["y"]))
+            self.laser["life"] -= 1
+            self.laser_win.geometry("+%d+%d" % (int(self.laser["x"]) - 18,
+                                                int(self.laser["y"]) - 18))
+            if self.laser["life"] <= 0:
+                self.kill_laser()
+
     def feed(self):
         self.hunger = max(0.0, self.hunger - 40)
         self.progress += 1.0
@@ -303,6 +405,61 @@ class Pet:
         self.ball = {"x": bx, "y": self.home_y - 60,
                      "vx": random.uniform(-5, 5), "vy": -4}
         self.say("毛线球！！")
+
+    # ---------- mini games ----------
+    def play_rps(self):
+        if self.state == "sleep":
+            self.say("Zzz…叫不应，在装睡")
+            return
+        d = tk.Toplevel(self.root)
+        d.title("和我猜拳")
+        d.attributes("-topmost", True)
+        tk.Label(d, text="我数到三，出拳！",
+                 font=("Microsoft YaHei", 12)).pack(pady=(12, 4))
+        row = tk.Frame(d)
+        row.pack(pady=8)
+        ops = ("石头", "剪刀", "布")
+
+        def throw(me):
+            d.destroy()
+            bot = random.randrange(3)
+            if me == bot:
+                self.say("平局！都出%s，默契～" % ops[me], 240)
+                self.happy = min(100.0, self.happy + 1)
+                self.set_expr("happy", 180)
+            elif (me - bot) % 3 == 2:
+                self.say("我出%s，我赢啦！哈哈" % ops[bot], 240)
+                self.happy = min(100.0, self.happy + 4)
+                self.progress += 0.2
+                self.set_expr("smug", 240)
+            else:
+                self.say("你赢了…我再练练！", 240)
+                self.happy = max(0.0, self.happy - 1)
+                self.set_expr("sad", 240)
+
+        for i, name in enumerate(ops):
+            tk.Button(row, text=name, width=7,
+                      font=("Microsoft YaHei", 11),
+                      command=lambda i=i: throw(i)).pack(side="left",
+                                                         padx=6)
+        d.resizable(False, False)
+
+    def call_here(self):
+        if self.state == "sleep":
+            self.say("Zzz…叫不应，在装睡")
+            return
+        self.state = "come"
+        self.timer = 360
+        self.say("来啦来啦！")
+
+    def do_flip(self):
+        if self.state == "sleep":
+            self.say("睡着翻不动…")
+            return
+        self.state = "flip"
+        self.flip_t = 0
+        self.flip_dir = self.facing
+        self.say("看我的！")
 
     # ---------- movement ----------
     def place_window(self):
@@ -344,6 +501,8 @@ class Pet:
             self.remind_next += 3600
             self.say("主人，喝口水休息一下吧！", 260)
             self.set_expr("surprised", 160)
+        if self.laser_on:
+            self.laser_tick()
         if self.thinking and self.t > self.think_until:
             self.thinking = False
         if self.t % 90 == 0:
@@ -391,7 +550,7 @@ class Pet:
                 self.state = "sleep"
             else:
                 roll = random.random()
-                if self.follow_on and roll < 0.55:
+                if self.follow_on and roll < 0.55 and not self.laser_on:
                     self.state = "wiggle"
                     self.timer = 22
                     self.say("锁定目标！", 90)
@@ -419,24 +578,43 @@ class Pet:
         elif self.state == "play":
             self.play_tick()
         elif self.state == "chase":
-            d, mx, my = self.dist_to_mouse()
-            self.target = (mx, min(my, self.home_y))
+            if self.laser_on and self.laser:
+                self.laser_target = True
+                lx, ly = self.laser["x"], self.laser["y"]
+                d = math.hypot(lx - self.x, ly - self.y)
+                self.target = (lx, min(ly, self.home_y))
+            else:
+                self.laser_target = False
+                d, mx, my = self.dist_to_mouse()
+                self.target = (mx, min(my, self.home_y))
             sp = 6.5 if self.stage == 2 else (5.5 if self.stage == 1 else 4.5)
             self.moving = self.nudge(sp)
             self.timer -= 1
-            if d < 46 and self.pull_on:
+            if d < 46 and (self.laser_target or self.pull_on):
                 self.state = "pounce"
                 self.timer = 9
-            elif d < 40 or self.timer <= 0 or d > 600:
+            elif d < 40 or self.timer <= 0 or \
+                    (d > 600 and not self.laser_target):
                 self.state = "rest"
                 self.timer = random.randint(30, 90)
                 self.say("没追上，好累")
         elif self.state == "pounce":
             self.timer -= 1
             if self.timer <= 0:
-                self.state = "bite"
-                self.timer = 30
-                self.say("啊呜！咬住！")
+                if self.laser_target and self.laser:
+                    self.state = "rest"
+                    self.timer = random.randint(40, 80)
+                    self.happy = min(100.0, self.happy + 2)
+                    self.progress += 0.1
+                    self.set_expr("happy", 160)
+                    self.fx.append({"type": "star", "x": 0, "y": -90,
+                                    "life": 40})
+                    self.say("拍到红点啦！")
+                    self.kill_laser()
+                else:
+                    self.state = "bite"
+                    self.timer = 30
+                    self.say("啊呜！咬住！")
         elif self.state == "bite":
             self.timer -= 1
             self.hold_cursor(self.x + self.facing * 10, self.y - 30, 42)
@@ -457,6 +635,10 @@ class Pet:
                 self.start_drag()
         elif self.state == "dragmouse":
             self.drag_tick()
+        elif self.state == "come":
+            self.come_tick()
+        elif self.state == "flip":
+            self.flip_tick()
 
         self.update_mood()
         self.place_window()
@@ -549,13 +731,55 @@ class Pet:
             self.ball = None
             self.say("玩毛线球好累好开心")
 
+    def come_tick(self):
+        self.timer -= 1
+        mx, my = get_mouse()
+        self.target = (mx, self.home_y)
+        self.moving = self.nudge(4.8)
+        if abs(mx - self.x) < 40:
+            self.state = "rest"
+            self.timer = 30
+            self.happy = min(100.0, self.happy + 1)
+            self.set_expr("happy", 150)
+            self.say("到啦！要我干嘛～")
+        elif self.timer <= 0:
+            self.state = "rest"
+            self.timer = 60
+            self.say("追不上你，哼")
+
+    def flip_tick(self):
+        self.flip_t += 1
+        ph = self.flip_t / 36.0
+        if ph >= 1.0:
+            self.state = "rest"
+            self.timer = 40
+            self.y = self.home_y
+            self.happy = min(100.0, self.happy + 2)
+            self.progress += 0.1
+            self.set_expr("smug", 220)
+            self.say("怎么样，厉害吧！")
+            self.fx.append({"type": "star", "x": 0, "y": -90, "life": 45})
+        else:
+            self.y = self.home_y - int(math.sin(ph * math.pi) * 80)
+            self.x += self.flip_dir * 4.5
+            self.clamp_pos()
+            self.facing = self.flip_dir if ph < 0.5 else -self.flip_dir
+            self.moving = True
+            if self.flip_t % 8 == 0:
+                self.fx.append({"type": "dust",
+                                "x": random.randint(-24, 24),
+                                "y": -4, "life": 12})
+
     def start_chase(self):
         if self.stage >= 2 and random.random() < 0.5:
             self.thinking = True
             self.think_until = self.t + random.randint(50, 110)
         self.state = "chase"
         self.timer = random.randint(160, 260)
-        self.say("盯上你的鼠标了！")
+        if self.laser_on and self.laser:
+            self.say("盯上红点了！")
+        else:
+            self.say("盯上你的鼠标了！")
 
     def evo_check(self):
         pass
@@ -956,6 +1180,11 @@ class Pet:
                 r = (45 - a) * 6
                 c.create_oval(cx - r, cy - r - 30, cx + r, cy + r - 30,
                               outline="#FFE066", width=3)
+            elif life["type"] == "dust":
+                r = 2 + (12 - a) * 0.4
+                c.create_oval(cx + e["x"] - r, cy + e["y"] - r * 0.6,
+                              cx + e["x"] + r, cy + e["y"] + r * 0.6,
+                              fill="#E4D8C2", outline="")
             elif life["type"] == "star":
                 ang = a * 0.25
                 c.create_text(cx + math.cos(ang) * 34,
