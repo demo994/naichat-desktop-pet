@@ -576,11 +576,12 @@ class Pet:
                         padx=12, pady=3, cursor="hand2",
                         command=self.user_evolve)
         btn.pack(pady=(2, 8))
-        btn.bind("<Button-1>", lambda e: "break")
         self._evo_btn = btn
         self.sync_evo_btn()
         w.resizable(False, False)
-        w.bind("<Button-1>", lambda e: w.iconify())
+        # 点面板空白处最小化，但点进化按钮不触发最小化
+        w.bind("<Button-1>",
+               lambda e: None if e.widget is btn else w.iconify())
 
     def on_menu(self, e):
         self.touch()
