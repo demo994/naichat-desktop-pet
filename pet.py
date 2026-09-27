@@ -145,6 +145,8 @@ class Pet:
         self._shop = None
         self.win_down = False
         self.win_last = -999
+        self.lbtn = False
+        self.lbtn_last = -999
         self.evo_times = [600, 1800]
         self.evo_needs = [5, 12]
 
@@ -729,6 +731,17 @@ class Pet:
             self.say("清江鱼累了吗？那休息吧", 240)
             self.set_expr("happy", 200)
         self.win_down = win_down
+        lbtn = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+        if lbtn and not self.lbtn and self.t - self.lbtn_last > 150 \
+                and self.state != "sleep" and not self.laser_on:
+            mx, my = get_mouse()
+            on_pet = (self.x - W // 2 < mx < self.x + W // 2 and
+                      self.y - H + 80 < my < self.y + H - 80)
+            if not on_pet:
+                self.lbtn_last = self.t
+                self.say("清江鱼累了吗？那休息吧", 240)
+                self.set_expr("happy", 200)
+        self.lbtn = lbtn
         if self.thinking and self.t > self.think_until:
             self.thinking = False
         if self.t % 90 == 0:
