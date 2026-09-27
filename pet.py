@@ -8,6 +8,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import time
 import tkinter as tk
@@ -152,6 +153,12 @@ class Pet:
         self.but = None
         self._last_line = {}
         self.jump_t = 0
+        self._mci = ctypes.windll.winmm.mciSendStringW
+        self.song = None
+        self.song_len = 0
+        self.lyric = []
+        self.lyric_i = 0
+        self.sing_pose = "mic"
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -326,6 +333,18 @@ class Pet:
         "knead": ("给你踩踩奶～", "左爪右爪，踩踩踩", "这个床床很软"),
         "loaf": ("四脚一缩，趴下", "变成一块猫面包", "安静地攒攒力气"),
         "playbow": ("一起来玩嘛！", "屁股翘高，准备扑～", "来追我呀！"),
+        # 点歌台 / 唱歌
+        "music_start": ("清清嗓子，麦霸上线🎤", "前奏一响，谁都拦不住我",
+                        "好吧，这首我会唱！"),
+        "music_none": ("歌单是空的…", "去 奶猫音乐盒 文件夹里放几首mp3吧",
+                       "没歌我唱什么呀～"),
+        "music_stop": ("咦，怎么断了", "好吧好吧，那我先不唱了",
+                       "切歌？那我再挑一首"),
+        "music_end": ("唱完啦，掌声在哪里👏", "呼～嗓子冒烟了",
+                      "谢谢谢谢，我只是只爱唱歌的猫"),
+        "sing_la": ("啦啦啦～♪", "喔～🎵 喔～🎵", "嗯嗯～♪～",
+                    "♪ 嘟嘟嘟～", "跟着节奏摇尾巴～", "🎵 喵呜喵呜～"),
+        "music_err": ("这歌放不出来呀…", "格式不对不对，我嗓子都等干了"),
     }
 
     def say_line(self, key, wait=180, **fmt):
@@ -462,16 +481,19 @@ class Pet:
         secs = int(self.total_secs)
         need = "MAX" if self.stage >= 2 else \
             f"{self.progress:.1f}/{self.evo_needs[self.stage]}"
-        return [f"形态：{names[self.stage]}",
-                f"金币：{self.money} 🪙",
-                f"饱腹：{bar(100 - self.hunger)}",
-                f"水分：{bar(100 - self.thirst)}",
-                f"心情：{bar(self.happy)}",
-                f"智力 Lv.{int(self.stats['智力'])}"
-                f"　魅力 Lv.{int(self.stats['魅力'])}"
-                f"　力量 Lv.{int(self.stats['力量'])}",
-                f"进化进度：{need}",
-                f"累计在线：{secs // 3600}小时{secs % 3600 // 60}分"]
+        out = [f"形态：{names[self.stage]}",
+               f"金币：{self.money} 🪙",
+               f"饱腹：{bar(100 - self.hunger)}",
+               f"水分：{bar(100 - self.thirst)}",
+               f"心情：{bar(self.happy)}",
+               f"智力 Lv.{int(self.stats['智力'])}"
+               f"　魅力 Lv.{int(self.stats['魅力'])}"
+               f"　力量 Lv.{int(self.stats['力量'])}",
+               f"进化进度：{need}",
+               f"累计在线：{secs // 3600}小时{secs % 3600 // 60}分"]
+        if self.song:
+            out.append(f"正在唱：《{self.song[:14]}》")
+        return out
 
     def refresh_status(self):
         if self._status_w is None:
@@ -535,6 +557,22 @@ class Pet:
         m.add_cascade(label="打工赚钱", menu=jm)
         m.add_command(label="摸摸头", command=self.pat)
         m.add_command(label="玩毛线球", command=self.start_play)
+        sm = tk.Menu(m, tearoff=0)
+        songs = self.list_songs()
+        for fn in songs:
+            disp = os.path.splitext(fn)[0].replace(" - APLMate.com", "")
+            sm.add_command(label="🎵 " + disp[:24],
+                           command=lambda f=fn: self.start_music(f))
+        if songs:
+            sm.add_separator()
+            if self.song:
+                sm.add_command(label="⏹ 停止（正在唱：" + self.song[:10] + "）",
+                               command=self.stop_music)
+        else:
+            sm.add_command(label="（歌单是空的）", state="disabled")
+        sm.add_command(label="📂 打开歌单文件夹（把mp3放进去）",
+                       command=self.open_music_dir)
+        m.add_cascade(label="点歌台 🎤", menu=sm)
         m.add_command(label=("激光逗猫棒：开" if self.laser_on
                              else "激光逗猫棒"),
                       command=self.toggle_laser)
@@ -556,8 +594,12 @@ class Pet:
         m.add_command(label="放大一点", command=lambda: self.set_scale(1.2))
         m.add_command(label="缩小一点", command=lambda: self.set_scale(0.83))
         m.add_command(label="保存到文件", command=self.save)
-        m.add_command(label="退出", command=self.root.destroy)
+        m.add_command(label="退出", command=self.quit_app)
         m.tk_popup(e.x_root, e.y_root)
+
+    def quit_app(self):
+        self.stop_music(quiet=True)
+        self.root.destroy()
 
     def toggle_pull(self):
         self.pull_on = not self.pull_on
@@ -581,10 +623,164 @@ class Pet:
             self.set_expr("love", 240)
 
     def toggle_sleep(self):
+        if self.state != "sleep":
+            self.stop_music(quiet=True)
         self.state = "rest" if self.state == "sleep" else "sleep"
 
     def set_scale(self, k):
         self.scale = max(0.6, min(1.8, self.scale * k))
+
+    # ---------- music box ----------
+    def music_dir(self):
+        return os.path.join(os.path.dirname(self.path()), "奶猫音乐盒")
+
+    def mci(self, cmd):
+        buf = ctypes.create_unicode_buffer(256)
+        err = self._mci(cmd, buf, 255, None)
+        if err:
+            return ""
+        return buf.value
+
+    def mci_open(self, cmd):
+        return self._mci(cmd, None, 0, None) == 0
+
+    def list_songs(self):
+        try:
+            d = self.music_dir()
+            os.makedirs(d, exist_ok=True)
+            return sorted(f for f in os.listdir(d)
+                          if f.lower().endswith((".mp3", ".wav")))
+        except OSError:
+            return []
+
+    def open_music_dir(self):
+        d = self.music_dir()
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.startfile(d)
+        except OSError:
+            self.say("这个文件夹打不开…")
+
+    def load_lrc(self, stem):
+        p = os.path.join(self.music_dir(), stem + ".lrc")
+        out = []
+        try:
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    for m in re.finditer(r"\[(\d+):(\d+)[.:](\d+)\](.*)",
+                                         line.strip()):
+                        ms = (int(m.group(1)) * 60 + int(m.group(2))) * 1000 \
+                            + int(m.group(3)) * 10
+                        txt = m.group(4).strip()
+                        if txt:
+                            out.append((ms, txt))
+        except OSError:
+            return []
+        out.sort()
+        return out
+
+    def strip_id3(self, src, dst):
+        with open(src, "rb") as f:
+            d = f.read()
+        i = 0
+        if d[:3] == b"ID3":
+            sz = ((d[6] & 0x7f) << 21) | ((d[7] & 0x7f) << 14) | \
+                ((d[8] & 0x7f) << 7) | (d[9] & 0x7f)
+            i = 10 + sz
+            while i < len(d) - 4 and not (d[i] == 0xFF and
+                                          (d[i + 1] & 0xE0) == 0xE0):
+                i += 1
+        with open(dst, "wb") as f:
+            f.write(b"ID3\x03\x00\x00\x00\x00\x00\x00" + d[i:])
+
+    def start_music(self, fname):
+        if self.state == "sleep":
+            self.state = "rest"
+        self.stop_music(quiet=True)
+        path = os.path.join(self.music_dir(), fname)
+        cached = os.path.join(self.music_dir(), "_cache", fname)
+        typ = " type mpegvideo" if fname.lower().endswith(".mp3") else ""
+        if os.path.exists(cached):
+            path = cached
+        if not self.mci_open(f'open "{path}"{typ} alias petmus'):
+            if not os.path.exists(cached):
+                try:
+                    os.makedirs(os.path.dirname(cached), exist_ok=True)
+                    self.strip_id3(path, cached)
+                    path = cached
+                except OSError:
+                    pass
+            if not self.mci_open(f'open "{path}"{typ} alias petmus'):
+                self.say_line("music_err", 160)
+                return
+        self.mci("play petmus")
+        try:
+            self.song_len = int(self.mci("status petmus length") or 0)
+        except ValueError:
+            self.song_len = 0
+        self.mci("play petmus from 0")
+        self.mci("setaudio petmus volume to 600")
+        stem = os.path.splitext(fname)[0]
+        self.song = stem.replace(" - APLMate.com", "")
+        self.lyric = self.load_lrc(stem)
+        self.lyric_i = 0
+        self.sing_pose = random.choice(("mic", "both", "lean", "hop"))
+        self.state = "music"
+        self.set_expr(random.choice(("happy", "star", "love")), 240)
+        self.say_line("music_start", 160)
+        self.fx.append({"type": "note", "x": random.randint(-20, 20),
+                        "y": -80, "life": 50})
+
+    def stop_music(self, quiet=False):
+        if self.song is None:
+            return
+        self.mci("stop petmus")
+        self.mci("close petmus")
+        self.song = None
+        self.lyric = []
+        if self.state == "music":
+            self.state = "rest"
+            self.timer = random.randint(40, 90)
+        if not quiet:
+            self.say_line("music_stop", 160)
+
+    def music_tick(self):
+        if self.song is None:
+            self.state = "rest"
+            return
+        if self.t % 16 == 0:
+            mode = self.mci("status petmus mode")
+            if mode != "playing":
+                self.mci("close petmus")
+                self.song = None
+                self.lyric = []
+                self.state = "rest"
+                self.timer = random.randint(40, 90)
+                self.happy = min(100.0, self.happy + 3)
+                self.progress += 0.05
+                self.say_line("music_end", 220)
+                self.fx.append({"type": "star", "x": 0, "y": -90,
+                                "life": 40})
+                return
+            try:
+                pos = int(self.mci("status petmus position") or 0)
+            except ValueError:
+                pos = 0
+            if self.lyric:
+                while self.lyric_i < len(self.lyric) and \
+                        self.lyric[self.lyric_i][0] <= pos:
+                    self.say(self.lyric[self.lyric_i][1], 240)
+                    self.lyric_i += 1
+            elif self.t % 160 == 0:
+                self.say_line("sing_la", 240)
+        if self.t % 44 == 0:
+            self.fx.append({"type": "note",
+                            "x": random.randint(-26, 26),
+                            "y": -76, "life": 50})
+        if self.t % 300 == 0:
+            self.set_expr(random.choice(("happy", "star", "love")), 260)
+        if self.sing_pose == "hop" and self.t % 60 == 0:
+            self.jump_t = 16
 
     # ---------- laser teaser ----------
     def toggle_laser(self):
@@ -1100,6 +1296,8 @@ class Pet:
                                     "life": 60})
                 else:
                     self.shake = 0
+        elif self.state == "music":
+            self.music_tick()
         elif self.state == "rest":
             self.timer -= 1
             if self.timer <= 0:
@@ -1403,7 +1601,7 @@ class Pet:
 
     def update_mood(self):
         if self.state in ("bite", "pounce", "grab", "dragmouse", "play",
-                          "work", "study", "greet", "beg"):
+                          "work", "study", "greet", "beg", "music"):
             return
         if self.hunger > 75 and self.t > self.say_until:
             self.say_line("hungry", 240)
@@ -1447,9 +1645,12 @@ class Pet:
             self.sqy *= 0.88
         self.wig = math.sin(self.t * 1.3) * 5 * s \
             if self.state == "wiggle" else 0
+        if self.state == "music" and self.sing_pose == "lean":
+            self.wig = math.sin(self.t * 0.07) * 7 * s
         self.mouth_open = self.state == "pounce" or \
             (self.state == "bite" and self.timer % 12 >= 6) or \
-            (self.state == "chase" and self.dist_to_mouse()[0] < 120)
+            (self.state == "chase" and self.dist_to_mouse()[0] < 120) or \
+            (self.state == "music" and self.t % 32 < 18)
         self.hop = 0
         if self.state == "pounce":
             self.hop = (9 - self.timer) * 3
@@ -1520,6 +1721,49 @@ class Pet:
                                   px + i * 5 * s + 1.6 * s, py - 3 * s,
                                   fill="#FFB6C1", outline="")
 
+        if self.state == "music":
+            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            hy = y - 46 * s
+            pose = self.sing_pose
+            if pose == "mic":
+                mx, my = cx + 12 * s, hy + 14 * s
+                c.create_line(mx - 5 * s, my + 13 * s, mx + 2 * s,
+                              my + 4 * s, width=max(2, int(4 * s)),
+                              fill="#8A8A8A")
+                c.create_oval(mx, my - 3 * s, mx + 11 * s, my + 8 * s,
+                              fill="#4A4A55", outline="")
+                c.create_oval(mx + 1 * s, hy + 9 * s, mx + 12 * s,
+                              hy + 19 * s, fill=paw_c, outline="#D9C3A5")
+                c.create_line(cx - 22 * s, hy + 16 * s, cx - 38 * s,
+                              hy + 6 * s, width=max(2, int(6 * s)),
+                              fill=paw_c)
+            elif pose == "both":
+                sw = math.sin(self.t * 0.18) * 4 * s
+                for k in (-1, 1):
+                    px = cx + k * 27 * s
+                    py = hy - 4 * s + sw * k
+                    c.create_oval(px - 7 * s, py - 4 * s, px + 7 * s,
+                                  py + 10 * s, fill=paw_c,
+                                  outline="#D9C3A5")
+                    for i in (-1, 0, 1):
+                        c.create_oval(px + i * 4 * s - 1.3 * s, py - 8 * s,
+                                      px + i * 4 * s + 1.3 * s, py - 4 * s,
+                                      fill="#FFB6C1", outline="")
+            elif pose == "lean":
+                c.create_oval(cx - 12 * s, y - 16 * s, cx - 2 * s,
+                              y - 6 * s, fill=paw_c, outline="#D9C3A5")
+                c.create_line(cx + 20 * s, hy + 18 * s, cx + 38 * s,
+                              hy + 30 * s, width=max(2, int(6 * s)),
+                              fill=paw_c)
+            elif pose == "hop":
+                for k in (-1, 1):
+                    px = cx + k * 22 * s
+                    py = hy - 16 * s
+                    c.create_line(cx + k * 12 * s, hy + 16 * s, px, py,
+                                  width=max(2, int(5 * s)), fill=paw_c)
+                    c.create_oval(px - 5 * s, py - 5 * s, px + 5 * s,
+                                  py + 5 * s, fill=paw_c,
+                                  outline="#D9C3A5")
         if self.state == "study":
             c.create_text(cx - 38 * s, y - 58 * s, text="📖",
                           font=("Segoe UI Emoji", int(15 * s)))
@@ -1898,7 +2142,7 @@ class Pet:
                       fill="#FFC1CC", outline="")
         c.create_oval(cx - 28 * s, hy + 6 * s, cx - 20 * s, hy + 12 * s,
                       fill="#FFC1CC", outline="")
-        if self.mouth_open:
+        if self.mouth_open and self.state != "music":
             paw = 14 * s * math.sin(self.t * 0.9)
             for k in (-1, 1):
                 c.create_oval(cx + k * 18 * s - 7 * s, hy + 18 * s - paw,
