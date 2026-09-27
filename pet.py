@@ -10,8 +10,11 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import tkinter as tk
+import urllib.parse
+import urllib.request
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -157,11 +160,18 @@ class Pet:
         self.song = None
         self.song_file = None
         self.song_len = 0
+        self.song_t0 = 0.0
+        self.song_pos0 = 0
         self.lyric = []
         self.lyric_i = 0
+        self.cur_line = ""
+        self.prev_line = ""
+        self.prev_until = 0
+        self.line_no = 0
         self.sing_pose = "mic"
         self.ctrl_win = None
         self._btn_pause = None
+        self._lrc_pending = None
         self.click_job = None
         self.press_x = 0
         self.press_y = 0
@@ -682,6 +692,122 @@ class Pet:
         out.sort()
         return out
 
+    @staticmethod
+    def _lrc_norm(s):
+        return re.sub(r"[\s\-_()\[\]]", "", s.lower())
+
+    LRC_ALIAS = {"陶喆": ("david tao",),
+                 "孙燕姿": ("stefanie sun", "yanzi sun"),
+                 "张惠妹": ("a-mei", "amei"),
+                 "许嵩": ("vae",),
+                 "李玖哲": ("eric li",),
+                 "吕彦良": ("matt lv", "matt lu")}
+
+    def _lrc_get_json(self, url):
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "naichat-pet/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    def _lrc_fetch_text(self, title, artist):
+        q = urllib.parse.urlencode({"q": title})
+        try:
+            rows = self._lrc_get_json("https://lrclib.net/api/search?" + q)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        tn, ar = self._lrc_norm(title), self._lrc_norm(artist)
+        cand = [r for r in rows
+                if tn in self._lrc_norm(r.get("trackName", "")) or
+                self._lrc_norm(r.get("trackName", "")) in tn] or rows
+
+        def hit(r):
+            a = self._lrc_norm(r.get("artistName", ""))
+            if not a:
+                return False
+            names = [ar] + [self._lrc_norm(x)
+                            for x in self.LRC_ALIAS.get(artist, ())]
+            return any(n and (n in a or a in n) for n in names)
+
+        def pick(pool):
+            exact = [r for r in pool if hit(r)]
+            if not exact:
+                if len(pool) > 3:
+                    return None
+                pool = pool
+            else:
+                pool = exact
+            full = [r for r in pool
+                    if "live" not in r.get("trackName", "").lower() and
+                    r.get("duration", 0) >= 60]
+            if not full:
+                full = [r for r in pool if r.get("duration", 0) >= 60] or pool
+            full.sort(key=lambda r: r.get("duration", 0))
+            return full[-1]
+
+        best = pick([r for r in cand if r.get("syncedLyrics")])
+        if best:
+            return best["syncedLyrics"]
+        best = pick([r for r in cand if r.get("plainLyrics")])
+        if best:
+            lines = [l.strip() for l in best["plainLyrics"].splitlines()
+                     if l.strip()]
+            start = 20000
+            span = max(3000, min(5200, (int(best.get("duration", 240) * 850)
+                                        - start) // max(1, len(lines))))
+            t = start
+            out = []
+            for l in lines:
+                out.append("[{:02d}:{:02d}.{:02d}]{}".format(
+                    t // 60000, t // 1000 % 60, t // 10 % 60, l))
+                t += span
+            return "\n".join(out)
+        return None
+
+    def fetch_lrc_async(self, stem, fname):
+        parts = [p.strip() for p in stem.split(" - ")]
+        title = parts[0]
+        artist = parts[1] if len(parts) > 1 else ""
+        if not title:
+            return
+
+        def work():
+            txt = None
+            try:
+                txt = self._lrc_fetch_text(title, artist)
+            except Exception:
+                txt = None
+            if not txt or self.song_file != fname:
+                return
+            try:
+                with open(os.path.join(self.music_dir(), stem + ".lrc"),
+                          "w", encoding="utf-8") as f:
+                    f.write(txt + "\n")
+            except OSError:
+                return
+            lyr = self.load_lrc(stem)
+            if not lyr or self.song_file != fname:
+                return
+            self._lrc_pending = (lyr, fname)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def apply_fetched(self, lyr, fname):
+        if self.song_file != fname:
+            return
+        pos = self.song_pos0 + int((time.time() - self.song_t0) * 1000)
+        self.lyric = lyr
+        self.lyric_i = 0
+        for i, (ms, _) in enumerate(lyr):
+            if ms > pos:
+                self.lyric_i = i
+                break
+        else:
+            self.lyric_i = len(lyr)
+        self.say("歌词找到啦～♪", 150)
+
+
     def strip_id3(self, src, dst):
         with open(src, "rb") as f:
             d = f.read()
@@ -726,8 +852,15 @@ class Pet:
         stem = os.path.splitext(fname)[0]
         self.song = stem.replace(" - APLMate.com", "")
         self.song_file = fname
+        self.song_t0 = time.time()
+        self.song_pos0 = 0
         self.lyric = self.load_lrc(stem)
+        if not self.lyric:
+            self.fetch_lrc_async(stem, fname)
         self.lyric_i = 0
+        self.cur_line = ""
+        self.prev_line = ""
+        self.line_no = 0
         self.sing_pose = random.choice(("mic", "both", "lean", "hop"))
         self.state = "music"
         self.set_expr(random.choice(("happy", "star", "love")), 240)
@@ -745,6 +878,9 @@ class Pet:
         self.song = None
         self.song_file = None
         self.lyric = []
+        self.cur_line = ""
+        self.prev_line = ""
+        self._lrc_pending = None
         self.hide_ctrl_win()
         if self.state == "music":
             self.state = "rest"
@@ -792,14 +928,25 @@ class Pet:
         px = int(max(self.L + 60, min(self.R - 60, self.x)) - 62)
         self.ctrl_win.geometry("+%d+%d" % (px, int(self.home_y) - 4))
 
+    def set_line(self, txt):
+        txt = txt.strip()
+        if not txt or txt == self.cur_line:
+            return
+        self.prev_line = self.cur_line
+        self.prev_until = self.t + 55
+        self.cur_line = txt
+        self.line_no += 1
+
     def toggle_pause(self):
         if self.song is None:
             return
         mode = self.mci("status petmus mode")
         if mode == "playing":
+            self.song_pos0 += int((time.time() - self.song_t0) * 1000)
             self.mci("pause petmus")
             self._btn_pause.config(text="▶")
         elif mode == "paused":
+            self.song_t0 = time.time()
             self.mci("play petmus")
             self._btn_pause.config(text="⏸")
 
@@ -815,7 +962,15 @@ class Pet:
         self.start_music(songs[(i + 1) % len(songs)])
 
     def music_tick(self):
-        if self.song is None or self.t % 16:
+        if self.song is None:
+            return
+        if self._lrc_pending:
+            lyr, fname = self._lrc_pending
+            self._lrc_pending = None
+            if fname == self.song_file:
+                self.apply_fetched(lyr, fname)
+            return
+        if self.t % 16:
             return
         mode = self.mci("status petmus mode")
         if mode == "paused":
@@ -825,6 +980,8 @@ class Pet:
             self.song = None
             self.song_file = None
             self.lyric = []
+            self.cur_line = ""
+            self.prev_line = ""
             self.hide_ctrl_win()
             if self.state == "music":
                 self.state = "rest"
@@ -836,16 +993,18 @@ class Pet:
                             "life": 40})
             return
         try:
-            pos = int(self.mci("status petmus position") or 0)
-        except ValueError:
+            pos = self.song_pos0 + int((time.time() - self.song_t0) * 1000)
+        except (TypeError, ValueError):
             pos = 0
         if self.lyric:
-            while self.lyric_i < len(self.lyric) and \
-                    self.lyric[self.lyric_i][0] <= pos:
-                self.say(self.lyric[self.lyric_i][1], 240)
-                self.lyric_i += 1
+            for i, (ms, txt) in enumerate(self.lyric):
+                if ms <= pos:
+                    self.set_line(txt)
+                    self.lyric_i = i + 1
+                else:
+                    break
         elif self.t % 160 == 0:
-            self.say_line("sing_la", 240)
+            self.set_line(random.choice(Pet.LINES["sing_la"]))
         if self.state in ("rest", "pick"):
             self.state = "music"
         if self.state == "music":
@@ -1871,8 +2030,35 @@ class Pet:
                          start=30, extent=120, style="arc", outline="#D65A73")
             c.create_arc(bx - 10, by - 10, bx + 10, by + 10,
                          start=200, extent=120, style="arc", outline="#D65A73")
+        self.draw_lyric(c, cx)
         self.draw_bubble(c, cx)
         self.draw_fx(c, cx, y)
+
+    LRC_COLORS = ("#D65A73", "#B4690E", "#5B8DB8", "#6B8E4E", "#8A6BB3")
+
+    def draw_lyric(self, c, cx):
+        if not self.song or not self.cur_line:
+            return
+        cur = self.cur_line
+        parts = [cur[:13], cur[13:26]] if len(cur) > 13 else [cur]
+        col = self.LRC_COLORS[self.line_no % len(self.LRC_COLORS)]
+        top = 46 if len(parts) == 1 else 40
+        if self.prev_line and self.t < self.prev_until and \
+                self.t >= self.say_until:
+            c.create_text(cx, 36, text=self.prev_line[:13],
+                          fill="#D9CFBC", font=("Microsoft YaHei", 8))
+        for i, seg in enumerate(parts):
+            yy = top + i * 15
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                c.create_text(cx + dx, yy + dy, text=seg, fill="white",
+                              font=("Microsoft YaHei", 11, "bold"))
+            c.create_text(cx, yy, text=seg, fill=col,
+                          font=("Microsoft YaHei", 11, "bold"))
+        w0 = 13 * len(parts[0]) + 4
+        c.create_text(cx - w0 // 2 - 9, top, text="♪", fill=col,
+                      font=("Arial", 9))
+        c.create_text(cx + w0 // 2 + 9, top, text="♪", fill=col,
+                      font=("Arial", 9))
 
     def draw_bubble(self, c, cx):
         if self.t >= self.say_until or not self.say_text:
