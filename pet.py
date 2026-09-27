@@ -79,6 +79,11 @@ class Pet:
         self.thinking = False
         self.think_until = 0
         self.fx = []
+        self.say_text = ""
+        self.say_until = 0
+        self.squash = 0
+        self.swipe = 0
+        self.ball = None
         self.drag_dx = 0
         self.drag_dy = 0
         self.save_next = time.time() + 20
@@ -140,10 +145,15 @@ class Pet:
             pass
 
     # ---------- interaction ----------
+    def say(self, text, dur=180):
+        self.mood = text
+        self.say_text = text
+        self.say_until = self.t + dur
+
     def on_press(self, e):
         if self.state == "sleep":
             self.state = "rest"
-            self.mood = "被吵醒啦"
+            self.say("被吵醒啦")
             return
         self.drag_dx, self.drag_dy = e.x, e.y
         self.state = "drag"
@@ -165,11 +175,12 @@ class Pet:
             self.thinking = True
             self.think_until = self.t + 90
         self.progress += 0.1
-        self.mood = "被撸得好开心"
+        self.say("被撸得好开心")
 
     def on_menu(self, e):
         m = tk.Menu(self.root, tearoff=0)
-        m.add_command(label="喂食小鱼干", command=self.feed)
+        m.add_command(label="喂清江鱼", command=self.feed)
+        m.add_command(label="玩毛线球", command=self.start_play)
         m.add_command(label=("跟随模式：开" if self.follow_on else "跟随模式：关"),
                       command=self.toggle_follow)
         m.add_command(label=("干扰拉扯：开" if self.pull_on else "干扰拉扯：关"),
@@ -184,7 +195,7 @@ class Pet:
 
     def toggle_pull(self):
         self.pull_on = not self.pull_on
-        self.mood = "会乖乖不拽鼠标" if not self.pull_on else "准备好咬鼠标啦"
+        self.say("会乖乖不拽鼠标" if not self.pull_on else "准备好咬鼠标啦")
 
     def toggle_follow(self):
         self.follow_on = not self.follow_on
@@ -201,10 +212,20 @@ class Pet:
         self.hunger = max(0.0, self.hunger - 40)
         self.progress += 1.0
         self.fx.append({"type": "food", "x": 0, "y": -50, "life": 40})
-        self.mood = "吃到小鱼干啦"
+        self.say("清江鱼！最爱了！")
         if self.state in ("idle", "rest", "wander"):
             self.state = "rest"
             self.timer = 40
+
+    def start_play(self):
+        if self.state == "sleep":
+            return
+        self.state = "play"
+        self.timer = 360
+        bx = self.x + random.choice((-1, 1)) * random.randint(60, 100)
+        self.ball = {"x": bx, "y": self.home_y - 60,
+                     "vx": random.uniform(-5, 5), "vy": -4}
+        self.say("毛线球！！")
 
     # ---------- movement ----------
     def place_window(self):
@@ -250,6 +271,10 @@ class Pet:
         if time.time() > self.save_next:
             self.save()
             self.save_next = time.time() + 20
+        if self.squash:
+            self.squash *= 0.86
+            if self.squash < 0.3:
+                self.squash = 0
 
         self.moving = False
         if self.state == "sleep":
@@ -263,23 +288,41 @@ class Pet:
             else:
                 self.state = "rest"
                 self.timer = 30
+                self.squash = 8
         elif self.state == "rest":
             self.timer -= 1
             if self.timer <= 0:
                 self.state = "pick"
                 self.timer = 1
         elif self.state == "pick":
-            if self.follow_on and random.random() < 0.7:
-                self.start_chase()
-            else:
+            roll = random.random()
+            if self.follow_on and roll < 0.55:
+                self.state = "wiggle"
+                self.timer = 22
+                self.say("锁定目标！", 90)
+            elif roll < 0.75:
                 self.target = (random.randint(self.L + 60, self.R - 60),
                                self.home_y)
                 self.state = "wander"
+            else:
+                self.state = random.choice(("groom", "stretch", "look"))
+                self.timer = random.randint(90, 170)
+        elif self.state in ("groom", "stretch", "look"):
+            self.timer -= 1
+            if self.timer <= 0:
+                self.state = "rest"
+                self.timer = random.randint(40, 120)
+        elif self.state == "wiggle":
+            self.timer -= 1
+            if self.timer <= 0:
+                self.start_chase()
         elif self.state == "wander":
             self.moving = self.nudge(3.2)
             if not self.moving or random.random() < 0.005:
                 self.state = "rest"
                 self.timer = random.randint(60, 200)
+        elif self.state == "play":
+            self.play_tick()
         elif self.state == "chase":
             d, mx, my = self.dist_to_mouse()
             self.target = (mx, min(my, self.home_y))
@@ -292,14 +335,14 @@ class Pet:
             elif d < 40 or self.timer <= 0 or d > 600:
                 self.state = "rest"
                 self.timer = random.randint(30, 90)
-                self.mood = "没追上，好累"
+                self.say("没追上，好累")
         elif self.state == "pounce":
             self.timer -= 1
             if self.timer <= 0:
                 self.state = "pull"
                 self.pull_left = random.randint(12, 22)
                 self.pull_next = 0
-                self.mood = "抓到啦！别想好好用鼠标！"
+                self.say("抓到啦！别想好好用鼠标！")
         elif self.state == "pull":
             mx, my = get_mouse()
             if self.t >= self.pull_next:
@@ -317,7 +360,7 @@ class Pet:
             if self.pull_left <= 0:
                 self.state = "rest"
                 self.timer = random.randint(60, 140)
-                self.mood = "咬累了，歇一会"
+                self.say("咬累了，歇一会")
                 self.evo_check()
 
         self.update_mood()
@@ -325,13 +368,51 @@ class Pet:
         self.draw()
         self.root.after(FPS_MS, self.tick)
 
+    def play_tick(self):
+        self.timer -= 1
+        b = self.ball
+        b["vy"] += 0.35
+        b["x"] += b["vx"]
+        b["y"] += b["vy"]
+        if b["x"] < self.x - 100:
+            b["x"] = self.x - 100
+            b["vx"] = abs(b["vx"])
+        if b["x"] > self.x + 100:
+            b["x"] = self.x + 100
+            b["vx"] = -abs(b["vx"])
+        if b["y"] < self.y - 150:
+            b["y"] = self.y - 150
+            b["vy"] = abs(b["vy"])
+        if b["y"] > self.home_y:
+            b["y"] = self.home_y
+            b["vy"] = -abs(b["vy"]) * 0.72
+            b["vx"] *= 0.9
+            if abs(b["vy"]) < 1.5:
+                b["vy"] = 0
+        d = math.hypot(b["x"] - self.x, b["y"] - self.y)
+        self.target = (b["x"], min(b["y"], self.home_y))
+        self.moving = self.nudge(5.2)
+        if d < 42:
+            b["vx"] = (1 if b["x"] >= self.x else -1) * random.uniform(6, 9)
+            b["vy"] = -random.uniform(4, 8)
+            self.swipe = 8
+            if random.random() < 0.25:
+                self.say("拍！毛线球！")
+        if self.swipe:
+            self.swipe -= 1
+        if self.timer <= 0:
+            self.state = "rest"
+            self.timer = 80
+            self.ball = None
+            self.say("玩毛线球好累好开心")
+
     def start_chase(self):
         if self.stage >= 2 and random.random() < 0.5:
             self.thinking = True
             self.think_until = self.t + random.randint(50, 110)
         self.state = "chase"
         self.timer = random.randint(160, 260)
-        self.mood = "盯上你的鼠标了！"
+        self.say("盯上你的鼠标了！")
 
     def evo_check(self):
         pass
@@ -345,18 +426,18 @@ class Pet:
             self.stage += 1
             self.fx.append({"type": "flash", "x": 0, "y": -20, "life": 45})
             names = ["", "你进化成了少年奶龙！", "你进化成了奶猫！！"]
-            self.mood = names[self.stage]
+            self.say(names[self.stage], 300)
             self.save()
 
     def update_mood(self):
-        if self.state in ("pull", "pounce"):
+        if self.state in ("pull", "pounce", "play"):
             return
-        if self.hunger > 75:
-            self.mood = "好饿…想小鱼干"
+        if self.hunger > 75 and self.t > self.say_until:
+            self.say("好饿…想吃清江鱼", 240)
         elif self.total_secs > 100 and self.stage == 0 and \
                 (self.progress >= self.evo_needs[0] or
                  self.total_secs >= self.evo_times[0]):
-            self.mood = "感觉要进化了！"
+            self.say("感觉要进化了！", 240)
             self.evo_try()
 
     # ---------- drawing ----------
@@ -373,6 +454,10 @@ class Pet:
             bob = math.sin(self.t * 0.11) * 1.3 * s
         y = cy + bob
         f = self.facing
+        self.sqx = 1 + self.squash * 0.014
+        self.sqy = 1 - self.squash * 0.02
+        self.wig = math.sin(self.t * 1.3) * 5 * s \
+            if self.state == "wiggle" else 0
         self.mouth_open = self.state in ("pounce", "pull") or \
             (self.state == "chase" and self.dist_to_mouse()[0] < 120)
         self.hop = 0
@@ -386,9 +471,35 @@ class Pet:
         else:
             self.draw_cat(c, cx, y, s, f)
 
+        if self.state == "play" and self.ball:
+            b = self.ball
+            bx, by = cx + (b["x"] - self.x), cy + (b["y"] - self.y)
+            c.create_oval(bx - 10, by - 10, bx + 10, by + 10,
+                          fill="#FF8FA3", outline="")
+            c.create_arc(bx - 10, by - 10, bx + 10, by + 10,
+                         start=30, extent=120, style="arc", outline="#D65A73")
+            c.create_arc(bx - 10, by - 10, bx + 10, by + 10,
+                         start=200, extent=120, style="arc", outline="#D65A73")
+        self.draw_bubble(c, cx)
         self.draw_fx(c, cx, y)
 
+    def draw_bubble(self, c, cx):
+        if self.t >= self.say_until or not self.say_text:
+            return
+        txt = self.say_text if len(self.say_text) <= 12 \
+            else self.say_text[:12]
+        wpx = 13 * len(txt) + 20
+        x1 = max(4, cx - wpx // 2)
+        x2 = min(W - 4, x1 + wpx)
+        c.create_polygon(cx - 5, 34, cx + 5, 34, cx, 44,
+                         fill="white", outline="")
+        c.create_oval(x1, 6, x2, 38, fill="white", outline="#CCCCCC")
+        c.create_text((x1 + x2) // 2, 22, text=txt, fill="#555555",
+                      font=("Microsoft YaHei", 9))
+
     def look_dir(self):
+        if self.state == "look":
+            return math.sin(self.t * 0.07) * 2.5, 0
         try:
             mx, my = get_mouse()
         except Exception:
@@ -401,21 +512,24 @@ class Pet:
         head_r = (34 if baby else 38) * s
         body_r = (26 if baby else 32) * s
         color, belly, spine = "#FFD94A", "#FFF3C0", "#F5A623"
-        c.create_oval(cx - 36 * s * f - 16 * s, y + 6 * s,
-                      cx - 36 * s * f + 16 * s, y + 22 * s,
+        c.create_oval(cx - 36 * s * f - 16 * s + self.wig, y + 6 * s,
+                      cx - 36 * s * f + 16 * s + self.wig, y + 22 * s,
                       fill=color, outline="")
         hy = y - (40 if baby else 46) * s + self.hop * -1.2
-        c.create_oval(cx - body_r, y - body_r + 8 * s, cx + body_r,
-                      y + body_r + 12 * s, fill=color, outline="")
-        c.create_oval(cx - body_r * 0.6, y - body_r * 0.4 + 10 * s,
-                      cx + body_r * 0.6, y + body_r + 10 * s,
+        if self.state == "stretch":
+            hy += 7 * s
+        c.create_oval(cx - body_r * self.sqx, y - body_r * self.sqy + 8 * s,
+                      cx + body_r * self.sqx,
+                      y + body_r * self.sqy + 12 * s, fill=color, outline="")
+        c.create_oval(cx - body_r * 0.6 * self.sqx, y - body_r * 0.4 + 10 * s,
+                      cx + body_r * 0.6 * self.sqx, y + body_r + 10 * s,
                       fill=belly, outline="")
         step = math.sin(self.t * 0.5) * 4 * s if self.moving else 0
-        c.create_oval(cx - 20 * s, y + body_r + 4 * s + step,
-                      cx - 2 * s, y + body_r + 16 * s + step,
+        c.create_oval(cx - 20 * s + self.wig, y + body_r + 4 * s + step,
+                      cx - 2 * s + self.wig, y + body_r + 16 * s + step,
                       fill=color, outline="")
-        c.create_oval(cx + 2 * s, y + body_r + 4 * s - step,
-                      cx + 20 * s, y + body_r + 16 * s - step,
+        c.create_oval(cx + 2 * s + self.wig, y + body_r + 4 * s - step,
+                      cx + 20 * s + self.wig, y + body_r + 16 * s - step,
                       fill=color, outline="")
         if not baby:
             c.create_oval(cx - 6 * s, hy - head_r * 0.35, cx + 6 * s,
@@ -432,10 +546,11 @@ class Pet:
                       cx + head_r * 0.55, hy + head_r * 0.6,
                       fill=belly, outline="")
         lx, ly = self.look_dir()
+        eyes_closed = self.state in ("sleep", "groom") or self.blink
         for k in (-1, 1):
             ey = hy - 8 * s
             px = cx + k * 16 * s
-            if self.state == "sleep" or self.blink:
+            if eyes_closed:
                 c.create_line(px - 5 * s, ey, px + 5 * s, ey, width=2,
                               fill="#5B4A12")
             else:
@@ -454,20 +569,34 @@ class Pet:
                       fill="#FFB6B6", outline="")
         c.create_oval(cx - 26 * s, hy + 4 * s, cx - 22 * s + 4, hy + 10 * s,
                       fill="#FFB6B6", outline="")
+        if self.state == "groom" and self.t % 60 < 32:
+            c.create_oval(cx + 10 * s, hy + 6 * s, cx + 24 * s, hy + 18 * s,
+                          fill=color, outline="")
+        if self.state == "stretch":
+            for k in (-1, 1):
+                c.create_oval(cx + k * 10 * s - 8 * s, hy + 20 * s,
+                              cx + k * 10 * s + 8 * s, hy + 32 * s,
+                              fill=color, outline="")
 
     def draw_cat(self, c, cx, y, s, f):
         color, belly, patch = "#FFEFD8", "#FFFFFF", "#FFC98A"
         hy = y - 46 * s - self.hop * 1.1
+        if self.state == "stretch":
+            hy += 8 * s
         by = y - 14 * s
-        tail_w = math.sin(self.t * 0.15) * 12 * s
-        c.create_line(cx + 26 * s, by + 8 * s,
-                      cx + 44 * s, by - 6 * s + tail_w,
+        tf = 0.5 if self.state in ("chase", "pounce", "pull", "play",
+                                   "wiggle") else 0.15
+        tail_w = math.sin(self.t * tf) * 12 * s
+        c.create_line(cx + 26 * s + self.wig, by + 8 * s,
+                      cx + 44 * s + self.wig, by - 6 * s + tail_w,
                       cx + 40 * s, hy + 6 * s,
                       width=int(8 * s), fill=patch,
                       capstyle="round", smooth=True)
-        c.create_oval(cx - 26 * s, by - 16 * s, cx + 26 * s, by + 22 * s,
+        c.create_oval(cx - 26 * s * self.sqx, by - 16 * s * self.sqy,
+                      cx + 26 * s * self.sqx, by + 22 * s * self.sqy,
                       fill=color, outline="")
-        c.create_oval(cx - 15 * s, by - 2 * s, cx + 15 * s, by + 20 * s,
+        c.create_oval(cx - 15 * s * self.sqx, by - 2 * s,
+                      cx + 15 * s * self.sqx, by + 20 * s,
                       fill=belly, outline="")
         for k in (-1, 1):
             c.create_arc(cx + k * 24 * s - 8 * s, by - 12 * s,
@@ -476,9 +605,16 @@ class Pet:
                          outline=patch, width=int(3 * s))
         step = math.sin(self.t * 0.5) * 3 * s if self.moving else 0
         for k, off in ((-1, step), (1, -step)):
-            c.create_oval(cx + k * 13 * s - 8 * s, by + 16 * s + off,
-                          cx + k * 13 * s + 8 * s, by + 24 * s + off,
+            c.create_oval(cx + k * 13 * s - 8 * s + self.wig,
+                          by + 16 * s + off,
+                          cx + k * 13 * s + 8 * s + self.wig,
+                          by + 24 * s + off,
                           fill=belly, outline="")
+        if self.state == "stretch":
+            for k in (-1, 1):
+                c.create_oval(cx + k * 22 * s - 8 * s, by + 12 * s,
+                              cx + k * 22 * s + 8 * s, by + 22 * s,
+                              fill=belly, outline="")
         for k in (-1, 1):
             bx = cx + k * 21 * s
             c.create_polygon(bx - 12 * s, hy - 10 * s,
@@ -496,9 +632,10 @@ class Pet:
                           cx + k * 9 * s + 2 * s, hy - 14 * s + abs(k) * 2 * s,
                           width=int(3 * s), fill=patch, capstyle="round")
         lx, ly = self.look_dir()
+        eyes_closed = self.state in ("sleep", "groom") or self.blink
         for k in (-1, 1):
             px, ey = cx + k * 14 * s, hy - 2 * s
-            if self.state == "sleep" or self.blink:
+            if eyes_closed:
                 c.create_arc(px - 6 * s, ey - 4 * s, px + 6 * s, ey + 6 * s,
                              start=200, extent=140, style="arc",
                              outline="#6B5B4A", width=2)
@@ -536,6 +673,16 @@ class Pet:
                 c.create_oval(cx + k * 18 * s - 7 * s, hy + 18 * s - paw,
                               cx + k * 18 * s + 7 * s, hy + 28 * s - paw,
                               fill=belly, outline="")
+        if self.state == "groom" and self.t % 60 < 32:
+            gp = abs(math.sin(self.t * 0.5)) * 4 * s
+            c.create_oval(cx + 10 * s, hy + 8 * s - gp, cx + 22 * s,
+                          hy + 18 * s - gp, fill=belly, outline="")
+        if self.state == "play" and self.swipe and self.ball:
+            dirx = 1 if self.ball["x"] >= self.x else -1
+            ext = (8 - self.swipe) * 5 * s * dirx
+            c.create_oval(cx + dirx * 26 * s + ext - 7 * s, by - 6 * s,
+                          cx + dirx * 26 * s + ext + 7 * s, by + 8 * s,
+                          fill=belly, outline="")
 
     def draw_fx(self, c, cx, cy):
         keep = []
