@@ -1,0 +1,10 @@
+__pycache__/
+build/
+dist/
+*.spec
+pet_state.json
+verify.png
+shot*.png
+win.bmp
+win.png
+view_*.png
