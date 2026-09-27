@@ -143,6 +143,8 @@ class Pet:
         self.job = None
         self.study = None
         self._shop = None
+        self.win_down = False
+        self.win_last = -999
         self.evo_times = [600, 1800]
         self.evo_needs = [5, 12]
 
@@ -719,6 +721,14 @@ class Pet:
             self.set_expr("surprised", 160)
         if self.laser_on:
             self.laser_tick()
+        win_down = bool(user32.GetAsyncKeyState(0x5B) & 0x8000) or \
+            bool(user32.GetAsyncKeyState(0x5C) & 0x8000)
+        if win_down and not self.win_down and self.t - self.win_last > 90 \
+                and self.state != "sleep":
+            self.win_last = self.t
+            self.say("清江鱼累了吗？那休息吧", 240)
+            self.set_expr("happy", 200)
+        self.win_down = win_down
         if self.thinking and self.t > self.think_until:
             self.thinking = False
         if self.t % 90 == 0:
