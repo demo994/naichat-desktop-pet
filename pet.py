@@ -322,6 +322,10 @@ class Pet:
         # 欢迎回家 / 讨食
         "greet": ("你回来啦！", "想死你了～", "你终于回来了！"),
         "beg": ("给口吃的嘛", "清江鱼…就一条", "肚子空空，爪爪合十"),
+        # 踩奶 / 母鸡蹲 / 邀玩
+        "knead": ("给你踩踩奶～", "左爪右爪，踩踩踩", "这个床床很软"),
+        "loaf": ("四脚一缩，趴下", "变成一块猫面包", "安静地攒攒力气"),
+        "playbow": ("一起来玩嘛！", "屁股翘高，准备扑～", "来追我呀！"),
     }
 
     def say_line(self, key, wait=180, **fmt):
@@ -350,7 +354,8 @@ class Pet:
         self.last_act = self.t
         if gap > 2700 and self.state in ("rest", "pick", "wander",
                                          "groom", "stretch", "look",
-                                         "yawn", "peek", "sneez"):
+                                         "yawn", "peek", "sneez",
+                                         "knead", "loaf"):
             self.state = "greet"
             self.timer = 70
             self.set_expr("love", 220)
@@ -436,6 +441,10 @@ class Pet:
             self.set_expr("love", 240)
             self.say_line("pat_love")
             self.jump_t = 16
+            if self.happy > 85 and self.state in ("rest", "pick"):
+                self.state = "knead"
+                self.timer = 100
+                self.say_line("knead", 200)
         else:
             self.set_expr("happy")
             self.say_line("pat_happy")
@@ -585,6 +594,11 @@ class Pet:
         self.laser_on = not self.laser_on
         if self.laser_on:
             self.say_line("laser_on", 260)
+            if self.state in ("rest", "pick", "wander", "groom",
+                              "stretch", "look", "loaf"):
+                self.state = "playbow"
+                self.timer = 55
+                self.say_line("playbow", 160)
         else:
             self.kill_laser()
             self.say_line("laser_off")
@@ -621,6 +635,7 @@ class Pet:
             self.state = "wiggle"
             self.timer = 8
             self.say_line("laser_dot", 90)
+            self.set_expr("star", 120)
 
     def kill_laser(self):
         self.laser = None
@@ -818,6 +833,7 @@ class Pet:
         self.ball = {"x": bx, "y": self.home_y - 60,
                      "vx": random.uniform(-5, 5), "vy": -4}
         self.say_line("ball_see")
+        self.set_expr("star", 160)
 
     # ---------- mini games ----------
     def play_rps(self):
@@ -958,7 +974,8 @@ class Pet:
 
     def idle_act_start(self):
         self.state = random.choice(("groom", "stretch", "look",
-                                    "yawn", "peek", "sneez"))
+                                    "yawn", "peek", "sneez",
+                                    "knead", "loaf"))
         if self.state == "yawn":
             self.timer = 90
             self.set_expr("sleepy", 90)
@@ -969,6 +986,13 @@ class Pet:
         elif self.state == "sneez":
             self.timer = 55
             self.say_line("sneez_pre", 60)
+        elif self.state == "knead":
+            self.timer = 100
+            self.set_expr("happy", 100)
+            self.say_line("knead", 200)
+        elif self.state == "loaf":
+            self.timer = random.randint(150, 260)
+            self.say_line("loaf", 180)
         else:
             self.timer = random.randint(90, 170)
 
@@ -1102,7 +1126,8 @@ class Pet:
                     self.state = "wander"
                 else:
                     self.idle_act_start()
-        elif self.state in ("groom", "stretch", "look", "yawn"):
+        elif self.state in ("groom", "stretch", "look", "yawn",
+                           "knead", "loaf", "playbow"):
             self.timer -= 1
             if self.timer <= 0:
                 self.state = "rest"
@@ -1417,6 +1442,9 @@ class Pet:
             self._expr = "normal"
         self.sqx = 1 + self.squash * 0.014
         self.sqy = 1 - self.squash * 0.02
+        if self.state == "loaf":
+            self.sqx *= 1.1
+            self.sqy *= 0.88
         self.wig = math.sin(self.t * 1.3) * 5 * s \
             if self.state == "wiggle" else 0
         self.mouth_open = self.state == "pounce" or \
@@ -1455,13 +1483,29 @@ class Pet:
                 c.create_oval(gx + i * 4.5 * s - 1.6 * s, gy - 8 * s,
                               gx + i * 4.5 * s + 1.6 * s, gy - 2 * s,
                               fill="#FFB6C1", outline="")
+        if self.state == "knead":
+            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            for k in (-1, 1):
+                ph = math.sin(self.t * 0.5 + (0 if k < 0 else math.pi))
+                ph = ph * 4 * s
+                kx, ky = cx + k * 10 * s, y - 20 * s + ph
+                c.create_oval(kx - 6 * s, ky - 6 * s, kx + 6 * s, ky + 6 * s,
+                              fill=paw_c, outline="#D9C3A5")
+                for i in (-1, 0, 1):
+                    c.create_oval(kx + i * 3.6 * s - 1.3 * s, ky - 5.5 * s,
+                                  kx + i * 3.6 * s + 1.3 * s, ky - 2.5 * s,
+                                  fill="#FFB6C1", outline="")
         if self.state == "beg":
             bp = math.sin(self.t * 0.3) * 2 * s
             paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
             for k in (-1, 1):
-                c.create_oval(cx + k * 8 * s - 7 * s, y - 32 * s + bp,
-                              cx + k * 8 * s + 7 * s, y - 16 * s + bp,
-                              fill=paw_c, outline="")
+                kx, ky = cx + k * 8 * s, y - 24 * s + bp
+                c.create_oval(kx - 7 * s, ky - 8 * s, kx + 7 * s, ky + 8 * s,
+                              fill=paw_c, outline="#D9C3A5")
+                for i in (-1, 0, 1):
+                    c.create_oval(kx + i * 4 * s - 1.3 * s, ky - 7 * s,
+                                  kx + i * 4 * s + 1.3 * s, ky - 3.5 * s,
+                                  fill="#FFB6C1", outline="")
         if self.state == "peek" and self.timer > 80:
             paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
             hy = y - 44 * s
@@ -1538,6 +1582,13 @@ class Pet:
         if e == "love":
             c.create_text(px, ey, text="❤", fill="#FF6B81",
                           font=("Arial", int(10 * s)))
+            return True
+        if e == "star":
+            r = 6.2 * s
+            c.create_oval(px - r * 0.85, ey - r, px + r * 0.85, ey + r,
+                          fill="#3A2E0A", outline="")
+            c.create_text(px, ey, text="✦", fill="#FFE066",
+                          font=("Arial", int(9 * s)))
             return True
         if e == "laugh":
             c.create_arc(px - 6 * s, ey - 7 * s, px + 6 * s, ey + 5 * s,
@@ -1655,6 +1706,8 @@ class Pet:
         hy = y - (40 if baby else 46) * s + self.hop * -1.2
         if self.state == "stretch":
             hy += 7 * s
+        elif self.state == "playbow":
+            hy += 10 * s
         c.create_oval(cx - body_r * self.sqx, y - body_r * self.sqy + 8 * s,
                       cx + body_r * self.sqx,
                       y + body_r * self.sqy + 12 * s, fill=color, outline="")
@@ -1743,9 +1796,11 @@ class Pet:
         hy = y - 46 * s - self.hop * 1.1
         if self.state == "stretch":
             hy += 8 * s
+        elif self.state == "playbow":
+            hy += 9 * s
         by = y - 14 * s
         tf = 0.5 if self.state in ("chase", "pounce", "pull", "play",
-                                   "wiggle") else 0.15
+                                   "wiggle", "playbow") else 0.15
         tail_w = math.sin(self.t * tf) * 12 * s
         c.create_line(cx + 26 * s + self.wig, by + 8 * s,
                       cx + 44 * s + self.wig, by - 6 * s + tail_w,
@@ -1924,6 +1979,11 @@ class Pet:
             c.create_text(cx + 40, cy - 110,
                           text="Z" * (1 + (self.t // 30) % 3),
                           fill="#9BB8E8", font=("Arial", 14, "bold"))
+            if self.t % 240 < 110:
+                dz = abs(math.sin(self.t * 0.08)) * 3
+                c.create_oval(cx + 8, cy - 30 + dz,
+                              cx + 14, cy - 22 + dz,
+                              fill="#9BD8F5", outline="")
 
 
 def main():
