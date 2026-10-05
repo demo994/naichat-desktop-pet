@@ -83,6 +83,27 @@ JOBS = [
     ("带货主播", "📱", "魅力", 8, 120, 380),
 ]
 
+# 模型（皮肤）：主色/肚皮色/点缀色，随成长解锁
+PAL_D = {"cream": ("#FFD94A", "#FFF3C0", "#F5A623"),
+         "orange": ("#FFA94A", "#FFE3BD", "#E8842B"),
+         "mint": ("#BFE06B", "#F1F8D8", "#7FB33D"),
+         "blue": ("#A8C8F0", "#EAF2FF", "#5B87C9"),
+         "amber": ("#FFC85A", "#FFF1CC", "#D98E2B")}
+PAL_C = {"cream": ("#FFEFD8", "#FFFFFF", "#FFC98A"),
+         "orange": ("#FFE0C2", "#FFF6EC", "#FFA85A"),
+         "mint": ("#E9F4DC", "#FBFFF4", "#BFD9A0"),
+         "blue": ("#E3ECF8", "#FFFFFF", "#B9CDE8"),
+         "amber": ("#FFF0CE", "#FFFAEC", "#F0B860")}
+MODELS = [("cream", "奶油原色", "初始解锁", lambda p: True),
+          ("orange", "橘子汽水", "成长进度≥3解锁",
+           lambda p: p.progress >= 3),
+          ("mint", "薄荷奶绿", "进化到少年奶龙解锁",
+           lambda p: p.stage >= 1),
+          ("blue", "蓝莓牛奶", "进化到奶猫解锁",
+           lambda p: p.stage >= 2),
+          ("amber", "琥珀流光", "成长进度≥25解锁",
+           lambda p: p.progress >= 25)]
+
 
 class Pet:
     def __init__(self):
@@ -94,6 +115,8 @@ class Pet:
         self.thirst = 0.0
         self.stats = {"智力": 0.0, "魅力": 0.0, "力量": 0.0}
         self.lrc_off = {}
+        self.model = "cream"
+        self.beg_sum = 0
         self.load()
         self.follow_on = True
         self.pull_on = True
@@ -240,6 +263,9 @@ class Pet:
                 self.stats[kk] = st.get(kk, 0.0)
             self.lrc_off = {str(k): int(v) for k, v in
                             d.get("lrc_off", {}).items()}
+            self.model = d.get("model", "cream")
+            if self.model not in PAL_D:
+                self.model = "cream"
         except Exception:
             pass
 
@@ -251,7 +277,8 @@ class Pet:
                            "hunger": self.hunger, "happy": self.happy,
                            "money": self.money, "thirst": self.thirst,
                            "stats": self.stats,
-                           "lrc_off": self.lrc_off},
+                           "lrc_off": self.lrc_off,
+                           "model": self.model},
                           f, ensure_ascii=False)
         except Exception:
             pass
@@ -357,6 +384,16 @@ class Pet:
         # 欢迎回家 / 讨食
         "greet": ("你回来啦！", "想死你了～", "你终于回来了！"),
         "beg": ("给口吃的嘛", "清江鱼…就一条", "肚子空空，爪爪合十"),
+        "beg_work_start": ("呜呜…出发乞讨！", "今天也要努力讨饭！",
+                           "爪爪一伸，黄金万两…不对，先讨口饭"),
+        "beg_work_hit": ("叮～谢谢老板！", "好心人一生平安！",
+                         "老板发财！赏一口饭吧～"),
+        "beg_work_miss": ("今天路人好少…", "呜呜，没人理我",
+                          "清江鱼也不给我饭吃"),
+        "beg_work_done": ("乞讨收工，一共讨到{pay}金！",
+                          "回来啦，碗里有{pay}个金币～"),
+        "model_swap": ("换好啦～现在是「{name}」！",
+                       "新皮肤！「{name}」上线～"),
         # 踩奶 / 母鸡蹲 / 邀玩
         "knead": ("给你踩踩奶～", "左爪右爪，踩踩踩", "这个床床很软"),
         "loaf": ("四脚一缩，趴下", "变成一块猫面包", "安静地攒攒力气"),
@@ -609,6 +646,8 @@ class Pet:
                            state=("normal" if ok else "disabled"),
                            command=lambda j=jb: self.start_work(j))
         m.add_cascade(label="打工赚钱", menu=jm)
+        m.add_command(label="🥣 去乞讨（无饱腹/水分门槛）",
+                      command=self.start_beg)
         m.add_command(label="摸摸头", command=self.pat)
         m.add_command(label="玩毛线球", command=self.start_play)
         sm = tk.Menu(m, tearoff=0)
@@ -637,6 +676,18 @@ class Pet:
                              else "喝水提醒：关"),
                       command=self.toggle_remind)
         m.add_command(label="查看状态", command=self.show_status)
+        skm = tk.Menu(m, tearoff=0)
+        for key, nm, cond, fn in MODELS:
+            ok = fn(self)
+            if ok:
+                lab = "🎨 " + nm + ("（使用中）" if self.model == key
+                                    else "")
+            else:
+                lab = "🔒 " + nm + "·" + cond
+            skm.add_command(label=lab,
+                            state=("normal" if ok else "disabled"),
+                            command=lambda k=key: self.select_model(k))
+        m.add_cascade(label="切换模型 🎨", menu=skm)
         m.add_command(label=("跟随模式：开" if self.follow_on else "跟随模式：关"),
                       command=self.toggle_follow)
         m.add_command(label=("干扰拉扯：开" if self.pull_on else "干扰拉扯：关"),
@@ -1420,6 +1471,61 @@ class Pet:
             self.say_line("job_done", 240, pay=pay)
             self.fx.append({"type": "coin", "x": 0, "y": -60, "life": 40})
 
+    def start_beg(self):
+        # 乞讨是零门槛赚钱方式：不看饱腹/水分，只要人还醒着且没在忙
+        if self.state == "sleep":
+            self.say_line("sleep_busy")
+            return
+        if self.state in ("work", "study", "begwork", "music"):
+            self.say_line("busy")
+            return
+        self.state = "begwork"
+        self.timer = 300
+        self.beg_sum = 0
+        self.say_line("beg_work_start")
+        self.set_expr("sad", 120)
+
+    def beg_tick(self):
+        self.timer -= 1
+        if self.timer % 45 == 0:
+            if random.random() < 0.62:
+                gain = random.randint(2, 6)
+                self.beg_sum += gain
+                self.money += gain
+                self.fx.append({"type": "coin",
+                                "x": random.randint(-20, 20),
+                                "y": -50, "life": 40})
+                self.set_expr("happy", 60)
+                if self.t > self.say_until:
+                    self.say_line("beg_work_hit", 100)
+            elif self.t > self.say_until and random.random() < 0.4:
+                self.say_line("beg_work_miss", 100)
+        if self.timer <= 0:
+            self.happy = max(0.0, self.happy - 3)
+            self.progress += 0.2
+            self.state = "rest"
+            self.timer = 60
+            self.say_line("beg_work_done", 240, pay=self.beg_sum)
+
+    def pal(self):
+        base = PAL_C if self.stage == 2 else PAL_D
+        return base.get(self.model, base["cream"])
+
+    def belly_c(self):
+        return self.pal()[1]
+
+    def select_model(self, key):
+        for k, nm, cond, fn in MODELS:
+            if k == key:
+                if not fn(self) or self.model == key:
+                    return
+                self.model = key
+                self.fx.append({"type": "flash", "x": 0, "y": -20,
+                                "life": 40})
+                self.say_line("model_swap", 240, name=nm)
+                self.save()
+                return
+
     def start_play(self):
         if self.state == "sleep":
             return
@@ -1832,6 +1938,8 @@ class Pet:
             self.study_tick()
         elif self.state == "work":
             self.work_tick()
+        elif self.state == "begwork":
+            self.beg_tick()
         elif self.state in ("tail", "butterfly", "sing", "roll", "mirror"):
             self.solo_tick()
         elif self.state == "greet":
@@ -2019,7 +2127,8 @@ class Pet:
 
     def update_mood(self):
         if self.state in ("bite", "pounce", "grab", "dragmouse", "play",
-                          "work", "study", "greet", "beg", "music"):
+                          "work", "study", "greet", "beg", "music",
+                          "begwork"):
             return
         if self.hunger > 75 and self.t > self.say_until:
             self.say_line("hungry", 240)
@@ -2098,7 +2207,7 @@ class Pet:
 
         if self.state == "greet":
             wave = math.sin(self.t * 0.5) * 7 * s
-            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            paw_c = self.belly_c()
             hy = y - 46 * s
             gx, gy = cx + 30 * s + wave * 0.4, hy - 26 * s
             c.create_oval(gx - 7 * s, gy - 4 * s, gx + 7 * s, gy + 12 * s,
@@ -2108,7 +2217,7 @@ class Pet:
                               gx + i * 4.5 * s + 1.6 * s, gy - 2 * s,
                               fill="#FFB6C1", outline="")
         if self.state == "knead":
-            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            paw_c = self.belly_c()
             for k in (-1, 1):
                 ph = math.sin(self.t * 0.5 + (0 if k < 0 else math.pi))
                 ph = ph * 4 * s
@@ -2121,7 +2230,7 @@ class Pet:
                                   fill="#FFB6C1", outline="")
         if self.state == "beg":
             bp = math.sin(self.t * 0.3) * 2 * s
-            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            paw_c = self.belly_c()
             for k in (-1, 1):
                 kx, ky = cx + k * 8 * s, y - 24 * s + bp
                 c.create_oval(kx - 7 * s, ky - 8 * s, kx + 7 * s, ky + 8 * s,
@@ -2131,7 +2240,7 @@ class Pet:
                                   kx + i * 4 * s + 1.3 * s, ky - 3.5 * s,
                                   fill="#FFB6C1", outline="")
         if self.state == "peek" and self.timer > 80:
-            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            paw_c = self.belly_c()
             hy = y - 44 * s
             wob = math.sin(self.t * 0.25) * 2 * s
             for k in (-1, 1):
@@ -2145,7 +2254,7 @@ class Pet:
                                   fill="#FFB6C1", outline="")
 
         if self.state == "music":
-            paw_c = "#FFFFFF" if self.stage == 2 else "#FFF3C0"
+            paw_c = self.belly_c()
             hy = y - 46 * s
             pose = self.sing_pose
             if pose == "mic":
@@ -2191,13 +2300,14 @@ class Pet:
             c.create_text(cx - 38 * s, y - 58 * s, text="📖",
                           font=("Segoe UI Emoji", int(15 * s)))
         elif self.state == "work" and self.job:
-            c.create_text(cx - 38 * s, y - 58 * s, text=self.job[1],
-                          font=("Segoe UI Emoji", int(15 * s)))
+            self.draw_job_act(c, cx, y, s)
             fr = max(0.0, min(1.0, 1 - self.timer / float(self.job[5])))
             c.create_rectangle(cx - 26, y - 88, cx + 26, y - 82,
                                fill="#FFFFFF", outline="#AAAAAA")
             c.create_rectangle(cx - 26, y - 88, cx - 26 + int(52 * fr),
                                y - 82, fill="#FFC94A", outline="")
+        elif self.state == "begwork":
+            self.draw_job_act(c, cx, y, s)
 
         if self.state == "butterfly" and self.but:
             b = self.but
@@ -2220,6 +2330,88 @@ class Pet:
         self.draw_fx(c, cx, y)
 
     LRC_COLORS = ("#D65A73", "#B4690E", "#5B8DB8", "#6B8E4E", "#8A6BB3")
+
+    def draw_job_act(self, c, cx, y, s):
+        t = self.t
+        def E(x, yy, ch, sz):
+            c.create_text(x, yy, text=ch,
+                          font=("Segoe UI Emoji", max(6, int(sz * s))))
+        if self.state == "begwork":
+            E(cx + 2 * s, y + 16 * s, "🥣", 16)
+            if t % 90 < 45:
+                ph = (t % 45) * 0.6
+                E(cx + 20 * s, y + 12 * s - ph * s, "🪙", 10)
+            return
+        jn = self.job[0] if self.job else ""
+        if jn == "发传单":
+            E(cx + 34 * s, y - 44 * s, "📄", 13)
+            for i in range(3):
+                ph = (t * 2 + i * 26) % 78
+                E(cx + 40 * s + ph * 0.7 * s,
+                  y - 52 * s - math.sin(ph / 78 * math.pi) * 14 * s,
+                  "📄", 7)
+        elif jn == "洗碗工":
+            c.create_oval(cx + 24 * s, y - 12 * s, cx + 52 * s, y + 2 * s,
+                          fill="#CBE8F6", outline="#9DBFD6")
+            ax = cx + 38 * s + math.cos(t * 0.4) * 8 * s
+            ay = y - 8 * s + math.sin(t * 0.4) * 3 * s
+            c.create_rectangle(ax - 4 * s, ay - 3 * s, ax + 4 * s,
+                               ay + 3 * s, fill="#FFD94A", outline="")
+            for i in range(3):
+                ph = (t * 1.5 + i * 13) % 40
+                c.create_oval(cx + 30 * s + i * 6 * s, y - 14 * s - ph * s,
+                              cx + 34 * s + i * 6 * s, y - 10 * s - ph * s,
+                              outline="#BFE3F5")
+        elif jn == "摆摊烤肠":
+            c.create_line(cx + 24 * s, y - 6 * s, cx + 52 * s, y - 6 * s,
+                          width=max(2, int(3 * s)), fill="#8A5A2B")
+            for i in range(3):
+                wob = math.sin(t * 0.3 + i) * 2 * s
+                c.create_line(cx + 28 * s + i * 8 * s, y - 10 * s + wob,
+                              cx + 33 * s + i * 8 * s, y - 10 * s - wob,
+                              width=max(2, int(3 * s)), fill="#D97B2B")
+            for i in range(2):
+                ph = (t + i * 20) % 40
+                c.create_oval(cx + 34 * s + i * 10 * s, y - 16 * s - ph * s,
+                              cx + 38 * s + i * 10 * s,
+                              y - 12 * s - ph * s, outline="#CCCCCC")
+        elif jn == "家教":
+            c.create_rectangle(cx + 22 * s, y - 14 * s, cx + 52 * s,
+                               y - 10 * s, fill="#C9A06B", outline="")
+            E(cx + 30 * s, y - 22 * s, "📖", 12)
+            E(cx + 44 * s, y - 20 * s - abs(math.sin(t * 0.25)) * 4 * s,
+              "✏️", 9)
+        elif jn == "搬运工":
+            bob = abs(math.sin(t * 0.2)) * 3 * s
+            E(cx, y - 84 * s - bob, "📦", 15)
+            if t % 60 < 30:
+                E(cx + 26 * s, y - 58 * s, "💦", 9)
+        elif jn == "驻唱歌手":
+            E(cx + 14 * s, y - 46 * s, "🎤", 11)
+            for i in range(3):
+                ph = (t * 1.2 + i * 22) % 66
+                E(cx + 26 * s + i * 7 * s, y - 52 * s - ph * s, "♪", 9)
+        elif jn == "健身教练":
+            up = abs(math.sin(t * 0.3)) * 12 * s
+            E(cx, y - 88 * s - up, "🏋️", 13)
+        elif jn == "程序员":
+            E(cx + 36 * s, y - 10 * s, "💻", 13)
+            for i in range(3):
+                if (t // 6 + i) % 3 == 0:
+                    c.create_oval(cx + 26 * s + i * 5 * s, y - 26 * s,
+                                  cx + 29 * s + i * 5 * s, y - 23 * s,
+                                  fill="#8FB8DE", outline="")
+        elif jn == "带货主播":
+            c.create_line(cx + 40 * s, y + 4 * s, cx + 40 * s, y - 26 * s,
+                          width=2, fill="#999999")
+            c.create_oval(cx + 30 * s, y - 42 * s, cx + 50 * s, y - 22 * s,
+                          outline="#FFD98A")
+            E(cx + 40 * s, y - 32 * s, "📱", 11)
+            for i in range(2):
+                ph = (t * 1.1 + i * 25) % 50
+                E(cx + 48 * s + i * 6 * s, y - 30 * s - ph * s, "💗", 8)
+        elif self.job:
+            E(cx - 38 * s, y - 58 * s, self.job[1], 15)
 
     def draw_bubble(self, c, cx):
         if self.t >= self.say_until or not self.say_text:
@@ -2375,7 +2567,7 @@ class Pet:
     def draw_dragon(self, c, cx, y, s, f, baby):
         head_r = (34 if baby else 38) * s
         body_r = (26 if baby else 32) * s
-        color, belly, spine = "#FFD94A", "#FFF3C0", "#F5A623"
+        color, belly, spine = self.pal()
         c.create_oval(cx - 36 * s * f - 16 * s + self.wig, y + 6 * s,
                       cx - 36 * s * f + 16 * s + self.wig, y + 22 * s,
                       fill=color, outline="")
@@ -2384,6 +2576,8 @@ class Pet:
             hy += 7 * s
         elif self.state == "playbow":
             hy += 10 * s
+        elif self.state == "begwork":
+            hy += 5 * s + abs(math.sin(self.t * 0.15)) * 4 * s
         c.create_oval(cx - body_r * self.sqx, y - body_r * self.sqy + 8 * s,
                       cx + body_r * self.sqx,
                       y + body_r * self.sqy + 12 * s, fill=color, outline="")
@@ -2468,12 +2662,14 @@ class Pet:
                               fill=color, outline="")
 
     def draw_cat(self, c, cx, y, s, f):
-        color, belly, patch = "#FFEFD8", "#FFFFFF", "#FFC98A"
+        color, belly, patch = self.pal()
         hy = y - 46 * s - self.hop * 1.1
         if self.state == "stretch":
             hy += 8 * s
         elif self.state == "playbow":
             hy += 9 * s
+        elif self.state == "begwork":
+            hy += 5 * s + abs(math.sin(self.t * 0.15)) * 4 * s
         by = y - 14 * s
         tf = 0.5 if self.state in ("chase", "pounce", "pull", "play",
                                    "wiggle", "playbow") else 0.15
